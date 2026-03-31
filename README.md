@@ -60,7 +60,7 @@ This keeps frontend-style services exposed by default while keeping internal ser
 Currently supported well:
 
 - `image:` services
-- `build:` services only after `docker compose build`, with an explicit pullable image reference
+- `build:` services after `docker compose build`, with an explicit `image:` reference
 - named volumes -> PVCs
 - Compose `secrets`
 - Compose `configs`
@@ -78,7 +78,6 @@ Currently rejected:
 
 - bind mounts
 - unsupported volume types
-- local-only build images such as `*.local/...`
 - `build:` without an explicit image name
 
 ## Important Limitations
@@ -90,12 +89,12 @@ Today it does not yet implement:
 - `x-uds.monitor`
 - `x-uds.sso`
 - `x-uds.caBundle`
-- local image archive generation for non-pullable built images
+- automatic image exporting or rewriting; Compose image references are preserved as-is
 - broader Compose coverage beyond the current support set
 
 The current contract for `build:` is:
 
-1. declare an explicit pullable `image:`
+1. declare an explicit `image:`
 2. run `docker compose build`
 3. run `docker compose bridge convert --transformations ...`
 
@@ -175,7 +174,7 @@ docker compose build
 docker compose bridge convert --transformations uds-compose-bridge:dev
 ```
 
-This works only when the service also has an explicit pullable `image:`. The transformer does not currently create `imageArchives` for local-only images.
+This works when the service also declares an explicit `image:`. The generated package preserves that Compose image reference as-is.
 
 ## Local Development
 
@@ -198,6 +197,7 @@ Useful fixtures in this repo:
 
 - `testdata/basic/compose.yaml`
 - `testdata/full/compose.yaml`
+- `testdata/full-working/compose.yaml`
 
 The `basic` example demonstrates:
 
@@ -209,13 +209,18 @@ The `basic` example demonstrates:
 
 The `full` example is useful for validating current rejection behavior, especially bind mounts.
 
+The `full-working` example is the supported counterpart to `full`:
+
+- keeps the same multi-service shape, build flow, secret, env file, profile, and named volumes
+- replaces the bind mount with a Compose `config`
+- keeps an explicit local image reference so the generated package preserves the same self-contained workflow after `docker compose build`
+
 ## What Is Left To Do
 
 The project is usable, but it is still an MVP. The main remaining work is:
 
-1. add support for local built images via `imageArchives` or a small outer wrapper
+1. improve end-to-end validation that generated packages work cleanly with locally built images
 2. expand UDS support beyond `network.expose` and `allow`
 3. add more Compose feature coverage and clearer validation for unsupported fields
 4. improve end-to-end tests around real `docker compose bridge convert` runs
 5. validate generated packages with `zarf package create` and `zarf dev lint` as part of normal development
-
