@@ -323,19 +323,38 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 		}
 	}
 
-	exposes := make([]udsExpose, 0, len(app.Exposes))
-	for _, expose := range buildPackageExposes(app) {
-		item := udsExpose{
-			Service:  expose.Service,
-			Host:     expose.Host,
-			Gateway:  expose.Gateway,
-			Port:     expose.Port,
-			Selector: map[string]string{"app.kubernetes.io/name": expose.Service},
+	var expose []any
+	if len(app.Package.NetworkExpose) > 0 {
+		expose = app.Package.NetworkExpose
+	} else {
+		for _, e := range buildPackageExposes(app) {
+			svcSelector := map[string]string{"app.kubernetes.io/name": e.Service}
+			item := map[string]any{
+				"service":   e.Service,
+				"host":      e.Host,
+				"gateway":   e.Gateway,
+				"port":      e.Port,
+				"selector":  svcSelector,
+				"podLabels": svcSelector,
+			}
+			if len(e.Paths) > 0 {
+				item["uptime"] = map[string]any{
+					"checks": map[string]any{"paths": e.Paths},
+				}
+			}
+			expose = append(expose, item)
 		}
-		if len(expose.Paths) > 0 {
-			item.Uptime = &udsUptime{Checks: udsChecks{Paths: expose.Paths}}
-		}
-		exposes = append(exposes, item)
+	}
+
+	spec := udsPackageSpec{
+		Network: udsNetwork{
+			ServiceMesh: udsServiceMesh{Mode: "ambient"},
+			Expose:      expose,
+			Allow:       allow,
+		},
+	}
+	if len(app.Package.SSO) > 0 {
+		spec.SSO = app.Package.SSO
 	}
 
 	return udsPackageManifest{
@@ -345,13 +364,7 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 			Name:      app.Package.Name,
 			Namespace: app.Package.Namespace,
 		},
-		Spec: udsPackageSpec{
-			Network: udsNetwork{
-				ServiceMesh: udsServiceMesh{Mode: "ambient"},
-				Expose:      exposes,
-				Allow:       allow,
-			},
-		},
+		Spec: spec,
 	}
 }
 
@@ -1010,11 +1023,12 @@ type udsPackageManifest struct {
 
 type udsPackageSpec struct {
 	Network udsNetwork `yaml:"network"`
+	SSO     []any      `yaml:"sso,omitempty"`
 }
 
 type udsNetwork struct {
 	ServiceMesh udsServiceMesh   `yaml:"serviceMesh"`
-	Expose      []udsExpose      `yaml:"expose,omitempty"`
+	Expose      []any            `yaml:"expose,omitempty"`
 	Allow       []map[string]any `yaml:"allow"`
 }
 
@@ -1022,22 +1036,6 @@ type udsServiceMesh struct {
 	Mode string `yaml:"mode"`
 }
 
-type udsExpose struct {
-	Service  string            `yaml:"service"`
-	Selector map[string]string `yaml:"selector,omitempty"`
-	Gateway  string            `yaml:"gateway"`
-	Host     string            `yaml:"host"`
-	Port     int               `yaml:"port"`
-	Uptime   *udsUptime        `yaml:"uptime,omitempty"`
-}
-
-type udsUptime struct {
-	Checks udsChecks `yaml:"checks"`
-}
-
-type udsChecks struct {
-	Paths []string `yaml:"paths"`
-}
 
 type zarfPackageConfig struct {
 	APIVersion string          `yaml:"apiVersion,omitempty"`

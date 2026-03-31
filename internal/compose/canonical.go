@@ -238,6 +238,9 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	}
 
 	if network, ok := asMap(rootUDS["network"]); ok {
+		if expose, ok := asSlice(network["expose"]); ok {
+			config.NetworkExpose = append(config.NetworkExpose, expose...)
+		}
 		if allow, ok := asSlice(network["allow"]); ok {
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
@@ -246,6 +249,10 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 		if allow, ok := asSlice(rootUDS["allow"]); ok {
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
+	}
+
+	if sso, ok := asSlice(rootUDS["sso"]); ok {
+		config.SSO = append(config.SSO, sso...)
 	}
 
 	return config, nil

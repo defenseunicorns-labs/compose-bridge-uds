@@ -81,7 +81,9 @@ type Package struct {
 	Name            string
 	Namespace       string
 	Version         string
+	NetworkExpose   []any
 	AdditionalAllow []any
+	SSO             []any
 }
 
 type Service struct {

@@ -26,14 +26,14 @@ go.work.sum
 
 # env file
 .env
+!examples/**/*.env
 
 # Editor/IDE
 # .idea/
 # .vscode/
 
 # Test data outputs
-testdata/basic/out/
-testdata/full/out/
+examples/**/out/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst
