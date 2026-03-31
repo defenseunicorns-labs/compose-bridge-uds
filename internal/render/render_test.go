@@ -95,7 +95,7 @@ func TestWritePackageFromBasicFixture(t *testing.T) {
 		"mode: ambient",
 		"remoteGenerated: IntraNamespace",
 		"service: wordpress",
-		"host: blog",
+		"host: wordpress",
 		"- /",
 	} {
 		if !strings.Contains(udsPackage, want) {
@@ -104,6 +104,90 @@ func TestWritePackageFromBasicFixture(t *testing.T) {
 	}
 	if strings.Contains(udsPackage, "service: db") {
 		t.Fatalf("did not expect internal-only db service to be auto-exposed")
+	}
+}
+
+func TestWritePackageFromFullWorkingFixture(t *testing.T) {
+	t.Parallel()
+
+	app := mustLoadFixture(t, filepath.Join("full-working", "compose.yaml"))
+	outDir := t.TempDir()
+
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	for _, file := range []string{
+		filepath.Join(outDir, "zarf.yaml"),
+		filepath.Join(outDir, "manifests", "deployment-hello-world.yaml"),
+		filepath.Join(outDir, "manifests", "deployment-redis.yaml"),
+		filepath.Join(outDir, "manifests", "service-hello-world.yaml"),
+		filepath.Join(outDir, "manifests", "service-redis.yaml"),
+		filepath.Join(outDir, "manifests", "pvc-hello-data.yaml"),
+		filepath.Join(outDir, "manifests", "pvc-redis-data.yaml"),
+		filepath.Join(outDir, "manifests", "configmap-app-config.yaml"),
+		filepath.Join(outDir, "manifests", "secret-app-secret.yaml"),
+		filepath.Join(outDir, "manifests", "uds-package.yaml"),
+	} {
+		if _, err := os.Stat(file); err != nil {
+			t.Fatalf("expected generated file %s: %v", file, err)
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"keel.local/hello:latest",
+		"redis:7-alpine",
+		"busybox:1.36",
+		"manifests/configmap-app-config.yaml",
+		"manifests/secret-app-secret.yaml",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q", want)
+		}
+	}
+	if strings.Contains(zarfConfig, "name: debugger") {
+		t.Fatalf("did not expect profiled debugger service to be rendered")
+	}
+
+	configMap := readFile(t, filepath.Join(outDir, "manifests", "configmap-app-config.yaml"))
+	if !strings.Contains(configMap, "Hello from config map") {
+		t.Fatalf("expected configmap to contain inline config content")
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if !strings.Contains(udsPackage, "service: hello-world") {
+		t.Fatalf("expected hello-world service to be exposed")
+	}
+	if strings.Contains(udsPackage, "service: redis") {
+		t.Fatalf("did not expect internal-only redis service to be exposed")
+	}
+}
+
+func TestLoadCanonicalAcceptsExplicitLocalBuildImage(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    build:
+      context: /workspace
+      dockerfile: Dockerfile
+    image: keel.local/api:latest
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(app.Services))
+	}
+	if app.Services[0].Image != "keel.local/api:latest" {
+		t.Fatalf("expected local image reference to be preserved, got %q", app.Services[0].Image)
+	}
+	if !app.Services[0].UsesBuild {
+		t.Fatalf("expected service to retain build metadata")
 	}
 }
 
@@ -119,7 +203,37 @@ func TestLoadCanonicalRejectsBindMounts(t *testing.T) {
 	}
 }
 
-func TestLoadCanonicalRejectsNonPullableBuildImage(t *testing.T) {
+func TestLoadCanonicalFileRejectsBindMountsAfterEnvFileNormalization(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "app-config.yml")
+	if err := os.WriteFile(configPath, []byte("message: hello\n"), 0o644); err != nil {
+		t.Fatalf("write bind source file: %v", err)
+	}
+	composePath := filepath.Join(dir, "compose.yaml")
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    env_file: .env
+    volumes:
+      - ./app-config.yml:/app/config.yml:ro
+`)
+	if err := os.WriteFile(composePath, input, 0o644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	_, err := compose.LoadCanonicalFile(composePath)
+	if err == nil {
+		t.Fatalf("expected bind mount fixture to fail")
+	}
+	if !strings.Contains(err.Error(), "bind mount") {
+		t.Fatalf("expected bind mount error after env_file normalization, got %v", err)
+	}
+}
+
+func TestLoadCanonicalRejectsBuildWithoutExplicitImage(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -128,14 +242,13 @@ services:
     build:
       context: /workspace
       dockerfile: Dockerfile
-    image: keel.local/api:latest
 `)
 
 	_, err := compose.LoadCanonicalYAML(input)
 	if err == nil {
-		t.Fatalf("expected non-pullable build image to fail")
+		t.Fatalf("expected build without image to fail")
 	}
-	if !strings.Contains(err.Error(), "non-pullable local image") {
+	if !strings.Contains(err.Error(), "does not declare an explicit image") {
 		t.Fatalf("expected build image validation error, got %v", err)
 	}
 }

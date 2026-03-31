@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: hello-world
+    namespace: hello-world
+    labels:
+        app.kubernetes.io/name: hello-world
+        app.kubernetes.io/part-of: hello-world
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: hello-world
+    template:
+        metadata:
+            name: ""
+            labels:
+                app.kubernetes.io/name: hello-world
+        spec:
+            initContainers:
+                - name: wait-redis
+                  image: busybox:1.36
+                  imagePullPolicy: IfNotPresent
+                  command:
+                    - sh
+                    - -c
+                    - until nc -z redis 6379; do echo waiting for redis:6379; sleep 2; done
+            containers:
+                - name: hello-world
+                  image: keel.local/hello:latest
+                  imagePullPolicy: IfNotPresent
+                  env:
+                    - name: APP_MESSAGE
+                      value: Hello from compose!
+                    - name: APP_PORT
+                      value: "8080"
+                  ports:
+                    - name: http
+                      containerPort: 8080
+                      protocol: TCP
+                  volumeMounts:
+                    - name: volume-hello-data
+                      mountPath: /var/lib/hello
+                    - name: secret-app-secret
+                      mountPath: /run/secrets/app-secret
+                      subPath: app-secret
+                      readOnly: true
+                    - name: config-app-config
+                      mountPath: /app/config.yml
+                      subPath: app-config
+                      readOnly: true
+                  livenessProbe:
+                    exec:
+                        command:
+                            - python
+                            - /app/server.py
+                            - --healthcheck
+            volumes:
+                - name: volume-hello-data
+                  persistentVolumeClaim:
+                    claimName: hello-data
+                - name: secret-app-secret
+                  secret:
+                    secretName: app-secret
+                    items:
+                        - key: app-secret
+                          path: app-secret
+                - name: config-app-config
+                  configMap:
+                    name: app-config
+                    items:
+                        - key: app-config
+                          path: app-config

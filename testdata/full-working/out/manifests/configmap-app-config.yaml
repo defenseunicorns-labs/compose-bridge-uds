@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: app-config
+    namespace: hello-world
+    labels:
+        app.kubernetes.io/name: app-config
+        app.kubernetes.io/part-of: hello-world
+data:
+    app-config: |
+        server:
+          greeting: "Hello from config map"

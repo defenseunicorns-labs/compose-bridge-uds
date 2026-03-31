@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: redis-data
+    namespace: hello-world
+    labels:
+        app.kubernetes.io/name: redis-data
+        app.kubernetes.io/part-of: hello-world
+spec:
+    accessModes:
+        - ReadWriteOnce
+    resources:
+        requests:
+            storage: 1Gi

@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -21,21 +23,62 @@ func LoadCanonicalFile(path string) (model.App, error) {
 	if err != nil {
 		return model.App{}, fmt.Errorf("read canonical compose file: %w", err)
 	}
-	return LoadCanonicalYAML(data)
+	return loadCanonicalYAML(data, path)
 }
 
 func LoadCanonicalYAML(data []byte) (model.App, error) {
-	var project types.Project
-	if err := yamlv3.Unmarshal(data, &project); err != nil {
-		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
-	}
+	return loadCanonicalYAML(data, "")
+}
 
+func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 	var raw map[string]any
 	if err := yamlv3.Unmarshal(data, &raw); err != nil {
 		return model.App{}, fmt.Errorf("decode canonical compose extensions: %w", err)
 	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
 
-	return loadProject(project, raw)
+	configPath := sourcePath
+	if configPath == "" {
+		configPath = "-"
+	}
+	configDetails := types.ConfigDetails{
+		WorkingDir: loadWorkingDir(sourcePath),
+		ConfigFiles: []types.ConfigFile{{
+			Filename: configPath,
+			Content:  data,
+		}},
+		Environment: types.Mapping{},
+	}
+
+	project, err := loader.LoadWithContext(
+		context.Background(),
+		configDetails,
+		loader.WithSkipValidation,
+		func(opts *loader.Options) {
+			// Bridge passes env_file references into the transformation container, but the
+			// source files themselves are not available there. Keep canonical env_file
+			// decoding without attempting to read those host paths.
+			opts.SkipResolveEnvironment = true
+		},
+	)
+	if err != nil {
+		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
+	}
+
+	return loadProject(*project, raw)
+}
+
+func loadWorkingDir(sourcePath string) string {
+	if sourcePath != "" {
+		return filepath.Dir(sourcePath)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }
 
 func loadProject(project types.Project, raw map[string]any) (model.App, error) {
@@ -93,6 +136,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	for _, key := range keys {
 		rawSvc := project.Services[key]
 		serviceName, _ := resolveAlias(serviceAliases, key)
+		rawServiceMap, _ := asMap(rawServices[key])
 
 		ports, err := parsePorts(rawSvc.Ports, rawSvc.Expose)
 		if err != nil {
@@ -118,14 +162,13 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		image := strings.TrimSpace(rawSvc.Image)
 		usesBuild := rawSvc.Build != nil
 		if usesBuild {
-			if err := validateBuildImage(serviceName, projectName, image); err != nil {
+			if err := validateBuildImage(serviceName, image, rawServiceMap); err != nil {
 				return model.App{}, err
 			}
 		} else if image == "" {
 			return model.App{}, fmt.Errorf("service %q must define image", key)
 		}
 
-		rawServiceMap, _ := asMap(rawServices[key])
 		serviceExposes, exposeDeclared, err := parseServiceExposes(rawServiceMap, serviceName, ports)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q x-uds.expose: %w", key, err)
@@ -208,27 +251,23 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	return config, nil
 }
 
-func validateBuildImage(serviceName string, projectName string, image string) error {
+func validateBuildImage(serviceName string, image string, rawService map[string]any) error {
 	trimmed := strings.TrimSpace(image)
-	if trimmed == "" {
-		return fmt.Errorf("service %q uses build but has no image; specify a pullable image and run `docker compose build` before conversion", serviceName)
+	if !hasExplicitImage(rawService) || trimmed == "" {
+		return fmt.Errorf("service %q uses build but does not declare an explicit image; specify `image:` and run `docker compose build` before conversion", serviceName)
 	}
-
-	defaultImage := projectName + "-" + serviceName
-	if trimmed == defaultImage || strings.HasPrefix(trimmed, defaultImage+":") {
-		return fmt.Errorf("service %q uses build with the default compose image name %q; specify an explicit pullable image and run `docker compose build` before conversion", serviceName, trimmed)
-	}
-
-	host := trimmed
-
-	if slash := strings.Index(trimmed, "/"); slash >= 0 {
-		host = trimmed[:slash]
-	}
-	if strings.HasSuffix(host, ".local") {
-		return fmt.Errorf("service %q uses build with non-pullable local image %q; use a pullable image reference and run `docker compose build` before conversion", serviceName, trimmed)
-	}
-
 	return nil
+}
+
+func hasExplicitImage(rawService map[string]any) bool {
+	if len(rawService) == 0 {
+		return false
+	}
+	value, exists := rawService["image"]
+	if !exists {
+		return false
+	}
+	return strings.TrimSpace(asString(value)) != ""
 }
 
 func parseEnvironment(raw types.MappingWithEquals) []model.EnvVar {
