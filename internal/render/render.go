@@ -16,10 +16,17 @@ import (
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
+type composeComponentSpec struct {
+	Name          string
+	Namespace     string
+	ManifestFiles []string
+	Images        []string
+	DependsOn     []string
+}
+
 func WritePackage(root string, app model.App) error {
-	chartDir := filepath.Join(root, "chart")
-	templatesDir := filepath.Join(chartDir, "templates")
-	for _, dir := range []string{root, chartDir, templatesDir} {
+	manifestDir := filepath.Join(root, "manifests")
+	for _, dir := range []string{root, manifestDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -34,24 +41,12 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	if err := writeYAMLFile(filepath.Join(chartDir, "Chart.yaml"), chartManifest{
-		APIVersion:  "v2",
-		Name:        app.Package.Name,
-		Description: fmt.Sprintf("UDS package chart generated from Docker Compose for %s", app.Package.Name),
-		Type:        "application",
-		Version:     app.Package.Version,
-	}); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(chartDir, "values.yaml"), []byte("{}\n"), 0o644); err != nil {
-		return fmt.Errorf("write chart values: %w", err)
-	}
-
-	if err := writeYAMLFile(filepath.Join(templatesDir, "namespace.yaml"), namespaceManifest{
+	namespaceRel := filepath.ToSlash(filepath.Join("manifests", "namespace.yaml"))
+	if err := writeYAMLFile(filepath.Join(manifestDir, "namespace.yaml"), namespaceManifest{
 		APIVersion: "v1",
 		Kind:       "Namespace",
 		Metadata: objectMeta{
-			Name: templateNamespace,
+			Name: app.Package.Namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/part-of": app.Package.Name,
 			},
@@ -60,17 +55,19 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
+	pvcManifestByName := map[string]string{}
 	for _, name := range sortedVolumeNames(app.Volumes) {
 		volume := app.Volumes[name]
 		if volume.External {
 			continue
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("pvc-%s.yaml", volume.Name)), persistentVolumeClaimManifest{
+		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("pvc-%s.yaml", volume.Name)))
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("pvc-%s.yaml", volume.Name)), persistentVolumeClaimManifest{
 			APIVersion: "v1",
 			Kind:       "PersistentVolumeClaim",
 			Metadata: objectMeta{
 				Name:      volume.Name,
-				Namespace: templateNamespace,
+				Namespace: app.Package.Namespace,
 				Labels:    appLabels(app.Package.Name, volume.Name),
 			},
 			Spec: persistentVolumeClaimSpec{
@@ -80,36 +77,45 @@ func WritePackage(root string, app model.App) error {
 		}); err != nil {
 			return err
 		}
+		pvcManifestByName[name] = relPath
 	}
 
+	configManifestByName := map[string]string{}
 	for _, name := range sortedConfigNames(app.Configs) {
 		config := app.Configs[name]
 		if config.External {
 			continue
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
+		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("configmap-%s.yaml", config.Name)))
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
 			APIVersion: "v1",
 			Kind:       "ConfigMap",
 			Metadata: objectMeta{
 				Name:      config.Name,
-				Namespace: templateNamespace,
+				Namespace: app.Package.Namespace,
 				Labels:    appLabels(app.Package.Name, config.Name),
 			},
 			Data: map[string]string{config.Name: config.Content},
 		}); err != nil {
 			return err
 		}
+		configManifestByName[name] = relPath
 	}
 
+	secretManifestByName := map[string]string{}
 	for _, name := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[name]
+		if secret.External {
+			continue
+		}
 		variableName := secretVariables[secret.Name]
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("secret-%s.yaml", secret.Name)), secretManifest{
+		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("secret-%s.yaml", secret.Name)))
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("secret-%s.yaml", secret.Name)), secretManifest{
 			APIVersion: "v1",
 			Kind:       "Secret",
 			Metadata: objectMeta{
 				Name:      secret.Name,
-				Namespace: templateNamespace,
+				Namespace: app.Package.Namespace,
 				Labels:    appLabels(app.Package.Name, secret.Name),
 			},
 			Type:       "Opaque",
@@ -117,70 +123,79 @@ func WritePackage(root string, app model.App) error {
 		}); err != nil {
 			return err
 		}
+		secretManifestByName[name] = relPath
 	}
 
+	components := make([]composeComponentSpec, 0, len(app.Services))
 	for _, svc := range app.Services {
-		ports := effectiveServicePorts(svc, app.Exposes)
-		deployment, err := buildDeployment(app.Package.Name, svc, app.Exposes, servicePorts)
+		manifestFiles := []string{namespaceRel}
+
+		for _, mount := range svc.Volumes {
+			if relPath, ok := pvcManifestByName[mount.Name]; ok {
+				manifestFiles = append(manifestFiles, relPath)
+			}
+		}
+		for _, ref := range svc.Secrets {
+			if relPath, ok := secretManifestByName[ref.Source]; ok {
+				manifestFiles = append(manifestFiles, relPath)
+			}
+		}
+		for _, ref := range svc.Configs {
+			if relPath, ok := configManifestByName[ref.Source]; ok {
+				manifestFiles = append(manifestFiles, relPath)
+			}
+		}
+
+		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, app.Exposes, servicePorts)
 		if err != nil {
 			return err
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment); err != nil {
+		deploymentRel := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("deployment-%s.yaml", svc.Name)))
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment); err != nil {
 			return err
 		}
+		manifestFiles = append(manifestFiles, deploymentRel)
 
-		if len(ports) > 0 {
-			if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), serviceManifest{
-				APIVersion: "v1",
-				Kind:       "Service",
-				Metadata: objectMeta{
-					Name:      svc.Name,
-					Namespace: templateNamespace,
-					Labels:    appLabels(app.Package.Name, svc.Name),
-				},
-				Spec: serviceSpec{
-					Selector: serviceSelector(svc.Name),
-					Ports:    buildServicePorts(ports),
-				},
-			}); err != nil {
-				return err
-			}
+		serviceRel := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("service-%s.yaml", svc.Name)))
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc, app.Exposes)); err != nil {
+			return err
 		}
+		manifestFiles = append(manifestFiles, serviceRel)
+
+		component := composeComponentSpec{
+			Name:          svc.Name,
+			Namespace:     app.Package.Namespace,
+			ManifestFiles: dedupeStrings(manifestFiles),
+			Images:        buildComponentImages(svc, servicePorts),
+			DependsOn:     buildComponentDependsOn(svc),
+		}
+		components = append(components, component)
 	}
 
-	if err := writeYAMLFile(filepath.Join(templatesDir, "uds-package.yaml"), buildUDSPackage(app)); err != nil {
+	ordered, err := orderComposeComponents(components)
+	if err != nil {
 		return err
 	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, servicePorts); err != nil {
+	packageRel := filepath.ToSlash(filepath.Join("manifests", "uds-package.yaml"))
+	if err := writeYAMLFile(filepath.Join(manifestDir, "uds-package.yaml"), buildUDSPackage(app)); err != nil {
+		return err
+	}
+	if len(ordered) > 0 {
+		last := len(ordered) - 1
+		ordered[last].ManifestFiles = dedupeStrings(append(ordered[last].ManifestFiles, packageRel))
+	}
+
+	dedupeSharedManifests(ordered)
+
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, ordered); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func writeZarfConfig(path string, app model.App, secretVariables map[string]string, servicePorts map[string]int) error {
-	images := map[string]struct{}{}
-	needsDependencyImage := false
-	for _, svc := range app.Services {
-		images[strings.TrimSpace(svc.Image)] = struct{}{}
-		if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
-			needsDependencyImage = true
-		}
-	}
-	if needsDependencyImage {
-		images[model.DependencyInitImage] = struct{}{}
-	}
-
-	imageList := make([]string, 0, len(images))
-	for image := range images {
-		if strings.TrimSpace(image) == "" {
-			continue
-		}
-		imageList = append(imageList, image)
-	}
-	sort.Strings(imageList)
-
+func writeZarfConfig(path string, app model.App, secretVariables map[string]string, components []composeComponentSpec) error {
 	variables := []zarfVariable{}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variables = append(variables, zarfVariable{
@@ -200,22 +215,22 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 			Version:     app.Package.Version,
 		},
 		Variables: variables,
-		Components: []zarfComponent{
-			{
-				Name:        app.Package.Name,
-				Required:    true,
-				Description: fmt.Sprintf("Deploy %s", app.Package.Name),
-				Charts: []zarfChart{
-					{
-						Name:      app.Package.Name,
-						Namespace: app.Package.Namespace,
-						Version:   app.Package.Version,
-						LocalPath: "chart",
-					},
+	}
+
+	for _, component := range components {
+		pkg.Components = append(pkg.Components, zarfComponent{
+			Name:        component.Name,
+			Required:    true,
+			Description: fmt.Sprintf("Deploy %s", component.Name),
+			Manifests: []zarfManifest{
+				{
+					Name:      component.Name + "-manifests",
+					Namespace: component.Namespace,
+					Files:     component.ManifestFiles,
 				},
-				Images: imageList,
 			},
-		},
+			Images: dedupeStrings(component.Images),
+		})
 	}
 
 	data, err := yamlv3.Marshal(pkg)
@@ -229,7 +244,7 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 	return nil
 }
 
-func buildDeployment(appName string, svc model.Service, exposes []model.Expose, servicePorts map[string]int) (deploymentManifest, error) {
+func buildDeployment(appName string, namespace string, svc model.Service, exposes []model.Expose, servicePorts map[string]int) (deploymentManifest, error) {
 	ports := effectiveServicePorts(svc, exposes)
 	volumes, volumeMounts := buildVolumes(svc)
 	resources := buildResources(svc.Resources)
@@ -255,7 +270,7 @@ func buildDeployment(appName string, svc model.Service, exposes []model.Expose, 
 		Kind:       "Deployment",
 		Metadata: objectMeta{
 			Name:      svc.Name,
-			Namespace: templateNamespace,
+			Namespace: namespace,
 			Labels:    appLabels(appName, svc.Name),
 		},
 		Spec: deploymentSpec{
@@ -275,6 +290,28 @@ func buildDeployment(appName string, svc model.Service, exposes []model.Expose, 
 	return manifest, nil
 }
 
+func buildService(appName string, namespace string, svc model.Service, exposes []model.Expose) serviceManifest {
+	ports := effectiveServicePorts(svc, exposes)
+	manifest := serviceManifest{
+		APIVersion: "v1",
+		Kind:       "Service",
+		Metadata: objectMeta{
+			Name:      svc.Name,
+			Namespace: namespace,
+			Labels:    appLabels(appName, svc.Name),
+		},
+		Spec: serviceSpec{
+			Selector: serviceSelector(svc.Name),
+		},
+	}
+	if len(ports) == 0 {
+		manifest.Spec.ClusterIP = "None"
+		return manifest
+	}
+	manifest.Spec.Ports = buildServicePorts(ports)
+	return manifest
+}
+
 func buildUDSPackage(app model.App) udsPackageManifest {
 	allow := []map[string]any{
 		{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
@@ -287,7 +324,7 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 	}
 
 	exposes := make([]udsExpose, 0, len(app.Exposes))
-	for _, expose := range app.Exposes {
+	for _, expose := range buildPackageExposes(app) {
 		item := udsExpose{
 			Service:  expose.Service,
 			Host:     expose.Host,
@@ -306,7 +343,7 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 		Kind:       "Package",
 		Metadata: objectMeta{
 			Name:      app.Package.Name,
-			Namespace: templateNamespace,
+			Namespace: app.Package.Namespace,
 		},
 		Spec: udsPackageSpec{
 			Network: udsNetwork{
@@ -316,6 +353,44 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 			},
 		},
 	}
+}
+
+func buildPackageExposes(app model.App) []model.Expose {
+	explicitByService := map[string][]model.Expose{}
+	for _, expose := range app.Exposes {
+		explicitByService[expose.Service] = append(explicitByService[expose.Service], expose)
+	}
+
+	combined := make([]model.Expose, 0, len(app.Exposes)+len(app.Services))
+	for _, svc := range app.Services {
+		if explicit, ok := explicitByService[svc.Name]; ok {
+			combined = append(combined, explicit...)
+			continue
+		}
+		if svc.ExposeDeclared {
+			continue
+		}
+		port, ok := primaryPublishedPort(svc.Ports)
+		if !ok {
+			continue
+		}
+		combined = append(combined, model.Expose{
+			Service: svc.Name,
+			Host:    svc.Name,
+			Gateway: "tenant",
+			Port:    port.Number,
+		})
+	}
+	return combined
+}
+
+func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
+	for _, port := range ports {
+		if port.Published {
+			return port, true
+		}
+	}
+	return model.Port{}, false
 }
 
 func effectiveServicePorts(svc model.Service, exposes []model.Expose) []model.Port {
@@ -419,6 +494,22 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 		})
 	}
 	return containers
+}
+
+func buildComponentImages(svc model.Service, servicePorts map[string]int) []string {
+	images := []string{svc.Image}
+	if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
+		images = append(images, model.DependencyInitImage)
+	}
+	return dedupeStrings(images)
+}
+
+func buildComponentDependsOn(svc model.Service) []string {
+	dependsOn := make([]string, 0, len(svc.DependsOn))
+	for _, dep := range svc.DependsOn {
+		dependsOn = append(dependsOn, dep.Service)
+	}
+	return dedupeStrings(dependsOn)
 }
 
 func buildEnv(env []model.EnvVar) []envVar {
@@ -602,6 +693,81 @@ func writeYAMLFile(path string, value any) error {
 	return nil
 }
 
+func dedupeSharedManifests(components []composeComponentSpec) {
+	claimed := map[string]struct{}{}
+	for i := range components {
+		unique := make([]string, 0, len(components[i].ManifestFiles))
+		for _, file := range components[i].ManifestFiles {
+			base := filepath.Base(file)
+			isShared := strings.HasPrefix(base, "secret-") || strings.HasPrefix(base, "configmap-") || strings.HasPrefix(base, "pvc-")
+			if isShared {
+				if _, exists := claimed[file]; exists {
+					continue
+				}
+				claimed[file] = struct{}{}
+			}
+			unique = append(unique, file)
+		}
+		components[i].ManifestFiles = unique
+	}
+}
+
+func orderComposeComponents(components []composeComponentSpec) ([]composeComponentSpec, error) {
+	if len(components) <= 1 {
+		return components, nil
+	}
+
+	componentByName := map[string]composeComponentSpec{}
+	indegree := map[string]int{}
+	dependents := map[string][]string{}
+	names := make([]string, 0, len(components))
+	for _, component := range components {
+		componentByName[component.Name] = component
+		indegree[component.Name] = 0
+		names = append(names, component.Name)
+	}
+
+	for _, component := range components {
+		for _, dep := range component.DependsOn {
+			if _, exists := componentByName[dep]; !exists {
+				continue
+			}
+			indegree[component.Name]++
+			dependents[dep] = append(dependents[dep], component.Name)
+		}
+	}
+
+	sort.Strings(names)
+	queue := make([]string, 0, len(names))
+	for _, name := range names {
+		if indegree[name] == 0 {
+			queue = append(queue, name)
+		}
+	}
+
+	ordered := make([]composeComponentSpec, 0, len(components))
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		ordered = append(ordered, componentByName[current])
+
+		next := append([]string(nil), dependents[current]...)
+		sort.Strings(next)
+		for _, dependent := range next {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+
+	if len(ordered) != len(components) {
+		return nil, fmt.Errorf("compose depends_on graph contains a cycle; unable to determine deterministic component order")
+	}
+
+	return ordered, nil
+}
+
 func sortedVolumeNames(volumes map[string]model.Volume) []string {
 	keys := make([]string, 0, len(volumes))
 	for key := range volumes {
@@ -629,6 +795,23 @@ func sortedConfigNames(configs map[string]model.Config) []string {
 	return keys
 }
 
+func dedupeStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 var invalidManifestNameRunes = regexp.MustCompile(`[^a-z0-9.-]+`)
 var invalidSecretVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
 
@@ -641,16 +824,6 @@ func sanitizeManifestName(raw string) string {
 		return "resource"
 	}
 	return name
-}
-
-const templateNamespace = "{{ .Release.Namespace }}"
-
-type chartManifest struct {
-	APIVersion  string `yaml:"apiVersion"`
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Type        string `yaml:"type"`
-	Version     string `yaml:"version"`
 }
 
 type objectMeta struct {
@@ -816,8 +989,9 @@ type serviceManifest struct {
 }
 
 type serviceSpec struct {
-	Selector map[string]string `yaml:"selector"`
-	Ports    []servicePort     `yaml:"ports"`
+	ClusterIP string            `yaml:"clusterIP,omitempty"`
+	Selector  map[string]string `yaml:"selector"`
+	Ports     []servicePort     `yaml:"ports,omitempty"`
 }
 
 type servicePort struct {
@@ -887,16 +1061,15 @@ type zarfVariable struct {
 }
 
 type zarfComponent struct {
-	Name        string      `yaml:"name"`
-	Required    bool        `yaml:"required"`
-	Description string      `yaml:"description,omitempty"`
-	Charts      []zarfChart `yaml:"charts,omitempty"`
-	Images      []string    `yaml:"images,omitempty"`
+	Name        string         `yaml:"name"`
+	Required    bool           `yaml:"required"`
+	Description string         `yaml:"description,omitempty"`
+	Manifests   []zarfManifest `yaml:"manifests,omitempty"`
+	Images      []string       `yaml:"images,omitempty"`
 }
 
-type zarfChart struct {
-	Name      string `yaml:"name"`
-	Namespace string `yaml:"namespace,omitempty"`
-	Version   string `yaml:"version,omitempty"`
-	LocalPath string `yaml:"localPath,omitempty"`
+type zarfManifest struct {
+	Name      string   `yaml:"name"`
+	Namespace string   `yaml:"namespace,omitempty"`
+	Files     []string `yaml:"files,omitempty"`
 }

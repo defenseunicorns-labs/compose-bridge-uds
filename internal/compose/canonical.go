@@ -118,7 +118,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		image := strings.TrimSpace(rawSvc.Image)
 		usesBuild := rawSvc.Build != nil
 		if usesBuild {
-			if err := validateBuildImage(serviceName, packageCfg.Name, image); err != nil {
+			if err := validateBuildImage(serviceName, projectName, image); err != nil {
 				return model.App{}, err
 			}
 		} else if image == "" {
@@ -126,27 +126,28 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		}
 
 		rawServiceMap, _ := asMap(rawServices[key])
-		serviceExposes, err := parseServiceExposes(rawServiceMap, serviceName, ports)
+		serviceExposes, exposeDeclared, err := parseServiceExposes(rawServiceMap, serviceName, ports)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q x-uds.expose: %w", key, err)
 		}
 
 		services = append(services, model.Service{
-			Name:        serviceName,
-			Image:       image,
-			UsesBuild:   usesBuild,
-			Ports:       ports,
-			Env:         parseEnvironment(rawSvc.Environment),
-			User:        strings.TrimSpace(rawSvc.User),
-			Command:     copyCommand(rawSvc.Entrypoint),
-			Args:        copyCommand(rawSvc.Command),
-			Healthcheck: parseHealthcheck(rawSvc.HealthCheck),
-			Volumes:     volumeMounts,
-			Secrets:     secretRefs,
-			Configs:     configRefs,
-			DependsOn:   dependsOn,
-			Resources:   parseResources(rawSvc.Deploy),
-			Profiles:    normalizeProfiles(rawSvc.Profiles),
+			Name:           serviceName,
+			Image:          image,
+			UsesBuild:      usesBuild,
+			Ports:          ports,
+			ExposeDeclared: exposeDeclared,
+			Env:            parseEnvironment(rawSvc.Environment),
+			User:           strings.TrimSpace(rawSvc.User),
+			Command:        copyCommand(rawSvc.Entrypoint),
+			Args:           copyCommand(rawSvc.Command),
+			Healthcheck:    parseHealthcheck(rawSvc.HealthCheck),
+			Volumes:        volumeMounts,
+			Secrets:        secretRefs,
+			Configs:        configRefs,
+			DependsOn:      dependsOn,
+			Resources:      parseResources(rawSvc.Deploy),
+			Profiles:       normalizeProfiles(rawSvc.Profiles),
 		})
 		exposes = append(exposes, serviceExposes...)
 	}
@@ -325,7 +326,7 @@ func parsePorts(rawPorts []types.ServicePortConfig, expose types.StringOrNumberL
 			continue
 		}
 		seen[key] = struct{}{}
-		ports = append(ports, model.Port{Number: int(raw.Target), Protocol: proto, Raw: key})
+		ports = append(ports, model.Port{Number: int(raw.Target), Protocol: proto, Raw: key, Published: true})
 	}
 
 	for _, token := range expose {
@@ -518,56 +519,56 @@ func parseResources(raw *types.DeployConfig) model.Resources {
 	return out
 }
 
-func parseServiceExposes(rawService map[string]any, serviceName string, ports []model.Port) ([]model.Expose, error) {
+func parseServiceExposes(rawService map[string]any, serviceName string, ports []model.Port) ([]model.Expose, bool, error) {
 	if len(rawService) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	uds, ok := asMap(rawService["x-uds"])
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	exposeRaw, exists := uds["expose"]
 	if !exists {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	switch typed := exposeRaw.(type) {
 	case bool:
 		if !typed {
-			return nil, nil
+			return nil, true, nil
 		}
 		expose, err := parseExposeEntry(nil, serviceName, ports)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
-		return []model.Expose{expose}, nil
+		return []model.Expose{expose}, true, nil
 	case map[string]any:
 		expose, err := parseExposeEntry(typed, serviceName, ports)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if expose.Port == 0 {
-			return nil, nil
+			return nil, true, nil
 		}
-		return []model.Expose{expose}, nil
+		return []model.Expose{expose}, true, nil
 	case []any:
 		out := make([]model.Expose, 0, len(typed))
 		for _, entry := range typed {
 			entryMap, ok := asMap(entry)
 			if !ok {
-				return nil, fmt.Errorf("expose list entries must be objects")
+				return nil, true, fmt.Errorf("expose list entries must be objects")
 			}
 			expose, err := parseExposeEntry(entryMap, serviceName, ports)
 			if err != nil {
-				return nil, err
+				return nil, true, err
 			}
 			if expose.Port > 0 {
 				out = append(out, expose)
 			}
 		}
-		return out, nil
+		return out, true, nil
 	default:
-		return nil, fmt.Errorf("unsupported expose shape %T", exposeRaw)
+		return nil, true, fmt.Errorf("unsupported expose shape %T", exposeRaw)
 	}
 }
 

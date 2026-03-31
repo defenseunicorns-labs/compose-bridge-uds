@@ -5,6 +5,10 @@ services:
     image: wordpress:latest
     ports:
       - "8000:80"
+    x-uds:
+      expose:
+        host: wordpress
+        path: /
     environment:
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_USER: wordpress
