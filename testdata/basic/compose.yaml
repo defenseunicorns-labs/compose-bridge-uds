@@ -1,0 +1,41 @@
+name: wordpress
+
+services:
+  wordpress:
+    image: wordpress:latest
+    ports:
+      - "8000:80"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_NAME: wordpress
+      # Official images use the _FILE suffix to look in /run/secrets/
+      WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - wordpress_data:/var/www/html
+    depends_on:
+      - db
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+      MYSQL_RANDOM_ROOT_PASSWORD: "1"
+    secrets:
+      - db_password
+    expose:
+      - "3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+secrets:
+  db_password:
+    file: ./db_password.txt
+
+volumes:
+  wordpress_data: {}
+  db_data: {}
