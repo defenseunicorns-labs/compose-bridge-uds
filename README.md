@@ -1,13 +1,93 @@
 # uds-compose-bridge
 
-`uds-compose-bridge` is a Docker Compose Bridge transformation that converts a Docker Compose application into a manifest-first UDS package layout.
+A [Docker Compose Bridge](https://docs.docker.com/compose/bridge/) transformation that converts a Docker Compose application into a deployable [UDS](https://uds.defenseunicorns.com/) package. It reads a `compose.yaml` and produces a Zarf package definition with Kubernetes manifests and a UDS Package CR, ready for `zarf package create` and deploy.
 
-The transformation takes the canonical Compose model from `/in/compose.yaml` and writes a Zarf package definition plus Kubernetes manifests to `/out`.
+## Quickstart
 
-Current output shape:
+### 1. Build the transformation image
+
+```bash
+docker build -t uds-compose-bridge:dev .
+```
+
+### 2. Prepare the example app
+
+From the `examples/full` directory, build the app image and create the required `.env` file:
+
+```bash
+cd examples/full
+docker compose build
+```
+
+### 3. Run the transformation
+
+```bash
+docker compose bridge convert --transformation uds-compose-bridge:dev
+```
+
+This writes the generated UDS package layout to `examples/full/out/`.
+
+### 4. Create and deploy the Zarf package
+
+```bash
+zarf package create out/
+zarf package deploy zarf-package-hello-world-*.tar.zst
+```
+
+## `x-uds` Extension
+
+Use `x-uds` at the top level of your `compose.yaml` to express UDS-specific configuration that cannot be inferred from Compose alone. Two keys are supported under `x-uds`:
+
+### `network`
+
+Controls how services are exposed on Istio gateways and what network traffic is allowed.
+
+```yaml
+x-uds:
+  network:
+    expose:
+      - service: server
+        host: hello-world
+        gateway: tenant
+        port: 8080
+        selector:
+          app.kubernetes.io/name: server
+        podLabels:
+          app.kubernetes.io/name: server
+    allow:
+      - description: egress to redis
+        direction: Egress
+        selector:
+          app.kubernetes.io/name: server
+        remoteNamespace: hello-world
+        remoteSelector:
+          app.kubernetes.io/name: redis
+        port: 6379
+```
+
+`expose` entries map directly to the [UDS Package `spec.network.expose`](https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/) fields. `allow` entries map to `spec.network.allow`.
+
+When no `x-uds.network.expose` is provided, services with published Compose `ports:` are auto-exposed. Services with only internal `expose:` are never auto-exposed.
+
+### `sso`
+
+Configures Keycloak SSO clients. Entries map directly to [UDS Package `spec.sso`](https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/) fields. Use `enableAuthserviceSelector` to protect pods with AuthService.
+
+```yaml
+x-uds:
+  sso:
+    - clientId: hello-world
+      name: Hello World
+      redirectUris:
+        - https://hello-world.uds.dev/*
+      enableAuthserviceSelector:
+        app.kubernetes.io/name: server
+```
+
+## Output Structure
 
 ```text
-/out
+out/
   zarf.yaml
   manifests/
     namespace.yaml
@@ -19,208 +99,32 @@ Current output shape:
     uds-package.yaml
 ```
 
-The generated `zarf.yaml` uses per-service components.
+- One Zarf component per Compose service, ordered by `depends_on`
+- Shared manifests (PVCs, ConfigMaps, Secrets) are deduplicated across components
+- A single `uds-package.yaml` is attached to the last component
 
-## How It Works
+## Supported Compose Features
 
-Compose Bridge resolves the Compose project first, then invokes this transformation image.
-
-At runtime the transformer:
-
-1. reads the canonical Compose model from `/in/compose.yaml`
-2. parses it into a normalized internal model
-3. validates unsupported behavior early
-4. generates plain Kubernetes manifests into `/out/manifests`
-5. generates a `zarf.yaml` in `/out` that references those manifests
-
-The generated package is manifest-first, not Helm-chart based.
-
-## Output Model
-
-The generated package follows these rules:
-
-- one Zarf component per Compose service
-- components are ordered by `depends_on`
-- shared manifests like PVCs, ConfigMaps, and Secrets are deduplicated so only one component owns them
-- a single `uds-package.yaml` is generated for the package and attached to the last ordered service component
-
-## Exposure Rules
-
-`uds-package.yaml` exposure is generated with this policy:
-
-1. services with published Compose `ports:` are auto-exposed
-2. services with only internal Compose `expose:` are not auto-exposed
-3. `x-uds.expose` overrides/customizes the generated exposure for a service
-4. `x-uds.expose: false` suppresses default exposure for that service
-
-This keeps frontend-style services exposed by default while keeping internal services like databases private.
-
-## Supported Input
-
-Currently supported well:
-
-- `image:` services
-- `build:` services after `docker compose build`, with an explicit `image:` reference
-- named volumes -> PVCs
-- Compose `secrets`
-- Compose `configs`
-- `environment`
-- resolved `env_file`
-- `depends_on`
-- `healthcheck`
+- `image:` and `build:` services (with explicit `image:` after `docker compose build`)
+- Named volumes (as PVCs)
+- Compose `secrets` and `configs`
+- `environment` and `env_file`
+- `depends_on` (with init-container wait logic)
+- `healthcheck` (as liveness probes)
 - `deploy.resources`
 - `profiles`
-- `x-uds.package.*`
-- `x-uds.allow` and `x-uds.network.allow`
-- `x-uds.expose`
 
-Currently rejected:
+Bind mounts and `build:` without an explicit `image:` are rejected.
 
-- bind mounts
-- unsupported volume types
-- `build:` without an explicit image name
-
-## Important Limitations
-
-This project intentionally does not try to infer every UDS concept from plain Compose.
-
-Today it does not yet implement:
-
-- `x-uds.monitor`
-- `x-uds.sso`
-- `x-uds.caBundle`
-- automatic image exporting or rewriting; Compose image references are preserved as-is
-- broader Compose coverage beyond the current support set
-
-The current contract for `build:` is:
-
-1. declare an explicit `image:`
-2. run `docker compose build`
-3. run `docker compose bridge convert --transformations ...`
-
-## Custom Compose Metadata
-
-Use `x-uds` to express UDS-specific intent that cannot be safely inferred from Compose alone.
-
-Example:
-
-```yaml
-name: wordpress
-
-services:
-  wordpress:
-    image: wordpress:latest
-    ports:
-      - "8000:80"
-    x-uds:
-      expose:
-        host: wordpress
-        path: /
-```
-
-Currently recognized keys:
-
-- `x-uds.package.name`
-- `x-uds.package.namespace`
-- `x-uds.package.version`
-- `x-uds.expose`
-- `x-uds.allow`
-- `x-uds.network.allow`
-
-## Build The Transformation Image
-
-Build a local image:
-
-```bash
-docker build -t uds-compose-bridge:dev .
-```
-
-## Use With Compose Bridge
-
-From a Compose project directory:
-
-```bash
-docker compose bridge convert --transformations uds-compose-bridge:dev
-```
-
-Or against a specific file:
-
-```bash
-docker compose -f path/to/compose.yaml bridge convert --transformations uds-compose-bridge:dev
-```
-
-Compose Bridge will invoke the transformation and write generated output into that project's `out/` directory.
-
-## Build A Deployable Package
-
-After conversion, create a Zarf package from the generated output:
-
-```bash
-zarf package create out
-```
-
-Then deploy it:
-
-```bash
-zarf package deploy out/zarf-package-*.tar.zst
-```
-
-## Build Services With `build:`
-
-If your Compose file uses `build:`:
-
-```bash
-docker compose build
-docker compose bridge convert --transformations uds-compose-bridge:dev
-```
-
-This works when the service also declares an explicit `image:`. The generated package preserves that Compose image reference as-is.
-
-## Local Development
-
-Run the test suite:
+## Development
 
 ```bash
 go test ./...
 ```
 
-Run the transformer directly against a canonical Compose model:
+To run the transformer directly against a resolved Compose model:
 
 ```bash
-docker compose -f testdata/basic/compose.yaml config > /tmp/basic.compose.yaml
-go run . -in /tmp/basic.compose.yaml -out /tmp/uds-out
+docker compose -f examples/full/compose.yaml config > /tmp/compose.yaml
+go run . -in /tmp/compose.yaml -out /tmp/uds-out
 ```
-
-## Example Fixtures
-
-Useful fixtures in this repo:
-
-- `testdata/basic/compose.yaml`
-- `testdata/full/compose.yaml`
-- `testdata/full-working/compose.yaml`
-
-The `basic` example demonstrates:
-
-- frontend + database service split
-- Compose secret handling
-- named volumes
-- per-service Zarf components
-- explicit `x-uds.expose` for the frontend
-
-The `full` example is useful for validating current rejection behavior, especially bind mounts.
-
-The `full-working` example is the supported counterpart to `full`:
-
-- keeps the same multi-service shape, build flow, secret, env file, profile, and named volumes
-- replaces the bind mount with a Compose `config`
-- keeps an explicit local image reference so the generated package preserves the same self-contained workflow after `docker compose build`
-
-## What Is Left To Do
-
-The project is usable, but it is still an MVP. The main remaining work is:
-
-1. improve end-to-end validation that generated packages work cleanly with locally built images
-2. expand UDS support beyond `network.expose` and `allow`
-3. add more Compose feature coverage and clearer validation for unsupported fields
-4. improve end-to-end tests around real `docker compose bridge convert` runs
-5. validate generated packages with `zarf package create` and `zarf dev lint` as part of normal development

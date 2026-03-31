@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-go/refs/tags/v2.10.1/schema/compose-spec.json
+name: hello-world
+
+services:
+  server:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_MESSAGE: "Hello from compose!"
+    ports:
+      - "8080:8080"
+    volumes:
+      - hello-data:/var/lib/hello
+    configs:
+      - source: app_config
+        target: /app/config.yml
+    secrets:
+      - source: app_secret
+        target: app-secret
+    depends_on:
+      db:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "/app/server.py", "--healthcheck"]
+
+  db:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  hello-data: {}
+  redis-data: {}
+
+configs:
+  app_config:
+    content: |
+      server:
+        greeting: "Hello from config map"
+
+secrets:
+  app_secret:
+    file: ./app-secret.txt
+
+x-uds:
+  network:
+    expose:
+      - service: server
+        host: hello-world
+        gateway: tenant
+        port: 8080
+        selector:
+          app.kubernetes.io/name: server
+        podLabels:
+          app.kubernetes.io/name: server
+    allow:
+      - description: hello-world egress to redis
+        direction: Egress
+        selector:
+          app.kubernetes.io/name: server
+        remoteNamespace: hello-world
+        remoteSelector:
+          app.kubernetes.io/name: redis
+        port: 6379
+  sso:
+    - clientId: hello-world
+      name: Hello World
+      redirectUris:
+        - https://hello-world.uds.dev/*
+      enableAuthserviceSelector:
+        app.kubernetes.io/name: server

@@ -1,2 +1,0 @@
-server:
-  greeting: "Hello from config map"

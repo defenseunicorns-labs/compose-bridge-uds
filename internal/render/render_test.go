@@ -119,10 +119,10 @@ func TestWritePackageFromFullWorkingFixture(t *testing.T) {
 
 	for _, file := range []string{
 		filepath.Join(outDir, "zarf.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-hello-world.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-redis.yaml"),
-		filepath.Join(outDir, "manifests", "service-hello-world.yaml"),
-		filepath.Join(outDir, "manifests", "service-redis.yaml"),
+		filepath.Join(outDir, "manifests", "deployment-server.yaml"),
+		filepath.Join(outDir, "manifests", "deployment-db.yaml"),
+		filepath.Join(outDir, "manifests", "service-server.yaml"),
+		filepath.Join(outDir, "manifests", "service-db.yaml"),
 		filepath.Join(outDir, "manifests", "pvc-hello-data.yaml"),
 		filepath.Join(outDir, "manifests", "pvc-redis-data.yaml"),
 		filepath.Join(outDir, "manifests", "configmap-app-config.yaml"),
@@ -156,11 +156,20 @@ func TestWritePackageFromFullWorkingFixture(t *testing.T) {
 	}
 
 	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	if !strings.Contains(udsPackage, "service: hello-world") {
-		t.Fatalf("expected hello-world service to be exposed")
+	if !strings.Contains(udsPackage, "service: server") {
+		t.Fatalf("expected server service to be exposed via x-uds.network.expose")
 	}
-	if strings.Contains(udsPackage, "service: redis") {
-		t.Fatalf("did not expect internal-only redis service to be exposed")
+	if !strings.Contains(udsPackage, "host: hello-world") {
+		t.Fatalf("expected expose host to be hello-world")
+	}
+	if !strings.Contains(udsPackage, "clientId: hello-world") {
+		t.Fatalf("expected SSO client to be rendered in uds-package.yaml")
+	}
+	if !strings.Contains(udsPackage, "enableAuthserviceSelector") {
+		t.Fatalf("expected enableAuthserviceSelector in SSO config")
+	}
+	if strings.Contains(udsPackage, "service: redis") || strings.Contains(udsPackage, "service: db") {
+		t.Fatalf("did not expect internal-only db/redis service to be exposed")
 	}
 }
 
@@ -373,7 +382,7 @@ func mustLoadFixture(t *testing.T, name string) model.App {
 
 func mustReadFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	path := filepath.Join("..", "..", "testdata", name)
+	path := filepath.Join("..", "..", "examples", name)
 	cmd := exec.Command("docker", "compose", "-f", path, "config")
 	data, err := cmd.CombinedOutput()
 	if err != nil {
