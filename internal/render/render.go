@@ -194,6 +194,9 @@ func WritePackage(root string, app model.App) error {
 	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, ordered); err != nil {
 		return err
 	}
+	if err := writeUDSConfig(filepath.Join(root, "uds-config.yaml"), app.Core); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -348,6 +351,9 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 			Expose:      expose,
 			Allow:       allow,
 		},
+	}
+	if len(app.Package.CABundle) > 0 {
+		spec.CABundle = app.Package.CABundle
 	}
 	if len(sso) > 0 {
 		spec.SSO = sso
@@ -1328,9 +1334,10 @@ type udsPackageManifest struct {
 }
 
 type udsPackageSpec struct {
-	Network udsNetwork `yaml:"network"`
-	Monitor []any      `yaml:"monitor,omitempty"`
-	SSO     []any      `yaml:"sso,omitempty"`
+	Network  udsNetwork     `yaml:"network"`
+	Monitor  []any          `yaml:"monitor,omitempty"`
+	SSO      []any          `yaml:"sso,omitempty"`
+	CABundle map[string]any `yaml:"caBundle,omitempty"`
 }
 
 type udsNetwork struct {
@@ -1341,6 +1348,46 @@ type udsNetwork struct {
 
 type udsServiceMesh struct {
 	Mode string `yaml:"mode"`
+}
+
+type udsConfig struct {
+	Variables udsConfigVariables `yaml:"variables,omitempty"`
+}
+
+type udsConfigVariables struct {
+	Core udsCoreVariables `yaml:"core,omitempty"`
+}
+
+type udsCoreVariables struct {
+	CABundleCerts              string `yaml:"CA_BUNDLE_CERTS,omitempty"`
+	CABundleIncludeDoDCerts    string `yaml:"CA_BUNDLE_INCLUDE_DOD_CERTS,omitempty"`
+	CABundleIncludePublicCerts string `yaml:"CA_BUNDLE_INCLUDE_PUBLIC_CERTS,omitempty"`
+}
+
+func writeUDSConfig(path string, core model.Core) error {
+	if !hasCoreVariables(core) {
+		return nil
+	}
+
+	config := udsConfig{
+		Variables: udsConfigVariables{
+			Core: udsCoreVariables{
+				CABundleCerts: core.CABundleCerts,
+			},
+		},
+	}
+	if core.CABundleIncludeDoDCerts != nil {
+		config.Variables.Core.CABundleIncludeDoDCerts = strconv.FormatBool(*core.CABundleIncludeDoDCerts)
+	}
+	if core.CABundleIncludePublicCerts != nil {
+		config.Variables.Core.CABundleIncludePublicCerts = strconv.FormatBool(*core.CABundleIncludePublicCerts)
+	}
+
+	return writeYAMLFile(path, config)
+}
+
+func hasCoreVariables(core model.Core) bool {
+	return strings.TrimSpace(core.CABundleCerts) != "" || core.CABundleIncludeDoDCerts != nil || core.CABundleIncludePublicCerts != nil
 }
 
 type zarfPackageConfig struct {

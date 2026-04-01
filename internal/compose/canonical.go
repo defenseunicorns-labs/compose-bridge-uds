@@ -95,7 +95,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		return model.App{}, fmt.Errorf("invalid compose project name: %w", err)
 	}
 
-	packageCfg, err := parsePackageConfig(projectName, raw)
+	packageCfg, coreCfg, err := parsePackageConfig(projectName, raw)
 	if err != nil {
 		return model.App{}, err
 	}
@@ -189,6 +189,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 
 	return model.App{
 		Package:  packageCfg,
+		Core:     coreCfg,
 		Services: services,
 		Volumes:  volumes,
 		Secrets:  secrets,
@@ -196,30 +197,31 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	}, nil
 }
 
-func parsePackageConfig(projectName string, raw map[string]any) (model.Package, error) {
+func parsePackageConfig(projectName string, raw map[string]any) (model.Package, model.Core, error) {
 	config := model.Package{
 		Name:      projectName,
 		Namespace: projectName,
 		Version:   model.DefaultVersion,
 	}
+	core := model.Core{}
 
 	rootUDS, ok := asMap(raw["x-uds"])
 	if !ok {
-		return config, nil
+		return config, core, nil
 	}
 
 	if pkg, ok := asMap(rootUDS["package"]); ok {
 		if value := strings.TrimSpace(asString(pkg["name"])); value != "" {
 			normalized, err := normalizeName(value)
 			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.name: %w", err)
+				return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.package.name: %w", err)
 			}
 			config.Name = normalized
 		}
 		if value := strings.TrimSpace(asString(pkg["namespace"])); value != "" {
 			normalized, err := normalizeName(value)
 			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.namespace: %w", err)
+				return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.package.namespace: %w", err)
 			}
 			config.Namespace = normalized
 		}
@@ -250,7 +252,63 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 		config.SSO = append(config.SSO, sso...)
 	}
 
-	return config, nil
+	if rawCABundle, exists := rootUDS["caBundle"]; exists {
+		caBundle, ok := asMap(rawCABundle)
+		if !ok {
+			return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.caBundle: must be an object")
+		}
+
+		packageCABundle := map[string]any{}
+		for key, value := range caBundle {
+			switch key {
+			case "CA_BUNDLE_CERTS":
+				certs, ok := value.(string)
+				if !ok || strings.TrimSpace(certs) == "" {
+					return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.caBundle.CA_BUNDLE_CERTS: must be a non-empty string")
+				}
+				core.CABundleCerts = strings.TrimSpace(certs)
+			case "CA_BUNDLE_INCLUDE_DOD_CERTS":
+				parsed, err := parseStringBool(value)
+				if err != nil {
+					return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS: %w", err)
+				}
+				core.CABundleIncludeDoDCerts = &parsed
+			case "CA_BUNDLE_INCLUDE_PUBLIC_CERTS":
+				parsed, err := parseStringBool(value)
+				if err != nil {
+					return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_PUBLIC_CERTS: %w", err)
+				}
+				core.CABundleIncludePublicCerts = &parsed
+			case "configMap":
+				if _, ok := asMap(value); !ok {
+					return model.Package{}, model.Core{}, fmt.Errorf("invalid x-uds.caBundle.configMap: must be an object")
+				}
+				packageCABundle[key] = value
+			default:
+				packageCABundle[key] = value
+			}
+		}
+		if len(packageCABundle) > 0 {
+			config.CABundle = packageCABundle
+		}
+	}
+
+	return config, core, nil
+}
+
+func parseStringBool(value any) (bool, error) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, nil
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+		if err != nil {
+			return false, fmt.Errorf("must be a boolean")
+		}
+		return parsed, nil
+	default:
+		return false, fmt.Errorf("must be a boolean")
+	}
 }
 
 func validateBuildImage(serviceName string, image string, rawService map[string]any) error {
