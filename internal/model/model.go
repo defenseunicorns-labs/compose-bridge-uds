@@ -74,6 +74,7 @@ type Package struct {
 	Namespace       string
 	Version         string
 	NetworkExpose   []any
+	Monitor         []any
 	AdditionalAllow []any
 	SSOConfigured   bool
 	SSO             []any
