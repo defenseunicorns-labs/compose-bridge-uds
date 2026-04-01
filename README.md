@@ -7,15 +7,15 @@ A [Docker Compose Bridge](https://docs.docker.com/compose/bridge/) transformatio
 The following example deploys UDS Core Slim Dev on k3d, and packages an example compose file:
 
 ```sh
-# deploy UDS Core Slim Dev
-uds deploy k3d-core-demo
+# (optionally) deploy UDS Core Slim Dev
+uds deploy k3d-core-slim-dev
 
 # build the example
 cd examples/full
 docker compose build
 
 # run the transformation
-docker compose bridge convert --transformation ghcr.io/defenseunicorns-dashdays/compose-bridge-uds:latest
+docker compose bridge convert -t ghcr.io/defenseunicorns-dashdays/compose-bridge-uds:latest
 
 # build and deploy the package
 zarf package create out/
@@ -26,7 +26,7 @@ zarf package deploy zarf-package-hello-world-*.tar.zst
 
 ### Supported Compose Specs
 
-- `image:` and `build:` services (with explicit `image:` after `docker compose build`)
+- `image:` and `build:` services
 - Named volumes (as PVCs)
 - Compose `secrets` and `configs`
 - `environment` and `env_file`
