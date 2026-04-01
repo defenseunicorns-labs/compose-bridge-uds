@@ -294,6 +294,52 @@ services:
 	}
 }
 
+func TestExplicitEmptySSODisablesAutoGeneration(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+x-uds:
+  network:
+    expose:
+      - service: web
+        host: app
+  sso: []
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if strings.Contains(udsPackage, "clientId:") {
+		t.Fatalf("did not expect SSO when x-uds.sso is explicitly empty\n%s", udsPackage)
+	}
+	if strings.Contains(udsPackage, "enableAuthserviceSelector") {
+		t.Fatalf("did not expect authservice selector when x-uds.sso is explicitly empty\n%s", udsPackage)
+	}
+	for _, want := range []string{
+		"service: web",
+		"host: app",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
 func TestSSOEnrichment(t *testing.T) {
 	t.Parallel()
 

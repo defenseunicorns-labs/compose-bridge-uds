@@ -169,21 +169,21 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		}
 
 		services = append(services, model.Service{
-			Name:      serviceName,
-			Image:     image,
-			UsesBuild: usesBuild,
-			Ports:     ports,
-			Env:       parseEnvironment(rawSvc.Environment),
-			User:           strings.TrimSpace(rawSvc.User),
-			Command:        copyCommand(rawSvc.Entrypoint),
-			Args:           copyCommand(rawSvc.Command),
-			Healthcheck:    parseHealthcheck(rawSvc.HealthCheck),
-			Volumes:        volumeMounts,
-			Secrets:        secretRefs,
-			Configs:        configRefs,
-			DependsOn:      dependsOn,
-			Resources:      parseResources(rawSvc.Deploy),
-			Profiles:       normalizeProfiles(rawSvc.Profiles),
+			Name:        serviceName,
+			Image:       image,
+			UsesBuild:   usesBuild,
+			Ports:       ports,
+			Env:         parseEnvironment(rawSvc.Environment),
+			User:        strings.TrimSpace(rawSvc.User),
+			Command:     copyCommand(rawSvc.Entrypoint),
+			Args:        copyCommand(rawSvc.Command),
+			Healthcheck: parseHealthcheck(rawSvc.HealthCheck),
+			Volumes:     volumeMounts,
+			Secrets:     secretRefs,
+			Configs:     configRefs,
+			DependsOn:   dependsOn,
+			Resources:   parseResources(rawSvc.Deploy),
+			Profiles:    normalizeProfiles(rawSvc.Profiles),
 		})
 	}
 
@@ -243,6 +243,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	}
 
 	if sso, ok := asSlice(rootUDS["sso"]); ok {
+		config.SSOConfigured = true
 		config.SSO = append(config.SSO, sso...)
 	}
 

@@ -75,25 +75,26 @@ type Package struct {
 	Version         string
 	NetworkExpose   []any
 	AdditionalAllow []any
+	SSOConfigured   bool
 	SSO             []any
 }
 
 type Service struct {
-	Name           string
-	Image          string
-	UsesBuild      bool
-	Ports          []Port
-	Env            []EnvVar
-	User           string
-	Command        []string
-	Args           []string
-	Healthcheck    *Healthcheck
-	Volumes        []VolumeMount
-	Secrets        []FileRef
-	Configs        []FileRef
-	DependsOn      []Dependency
-	Resources      Resources
-	Profiles       []string
+	Name        string
+	Image       string
+	UsesBuild   bool
+	Ports       []Port
+	Env         []EnvVar
+	User        string
+	Command     []string
+	Args        []string
+	Healthcheck *Healthcheck
+	Volumes     []VolumeMount
+	Secrets     []FileRef
+	Configs     []FileRef
+	DependsOn   []Dependency
+	Resources   Resources
+	Profiles    []string
 }
 
 type App struct {
