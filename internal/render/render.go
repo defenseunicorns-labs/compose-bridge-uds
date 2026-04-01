@@ -317,14 +317,11 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 		{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
 		{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
 	}
-	inferred := buildInferredAllowRules(app)
-	allow = append(allow, inferred...)
 	for _, rule := range app.Package.AdditionalAllow {
 		if item, ok := rule.(map[string]any); ok {
 			allow = append(allow, item)
 		}
 	}
-	allow = deduplicateAllowRules(allow)
 
 	// --- Expose rules ---
 	var expose []any
@@ -426,84 +423,6 @@ func enrichNetworkExposes(app model.App) []any {
 		enriched = append(enriched, item)
 	}
 	return enriched
-}
-
-// buildInferredAllowRules generates egress rules from depends_on relationships.
-func buildInferredAllowRules(app model.App) []map[string]any {
-	serviceByName := buildServiceIndex(app.Services)
-	var rules []map[string]any
-
-	for _, svc := range app.Services {
-		for _, dep := range svc.DependsOn {
-			depSvc, found := serviceByName[dep.Service]
-			if !found {
-				continue
-			}
-			port, err := depSvc.PrimaryPort()
-			if err != nil {
-				continue
-			}
-			rules = append(rules, map[string]any{
-				"description":     fmt.Sprintf("%s egress to %s", svc.Name, dep.Service),
-				"direction":       "Egress",
-				"selector":        map[string]string{"app.kubernetes.io/name": svc.Name},
-				"remoteNamespace": app.Package.Namespace,
-				"remoteSelector":  map[string]string{"app.kubernetes.io/name": dep.Service},
-				"port":            port.Number,
-			})
-		}
-	}
-	return rules
-}
-
-// allowRuleKey builds a canonical deduplication key for an allow rule.
-func allowRuleKey(rule map[string]any) string {
-	dir, _ := rule["direction"].(string)
-	sel := selectorString(rule["selector"])
-	remoteSel := selectorString(rule["remoteSelector"])
-	remoteGen, _ := rule["remoteGenerated"].(string)
-	port := fmt.Sprintf("%v", rule["port"])
-	return dir + "|" + sel + "|" + remoteSel + "|" + remoteGen + "|" + port
-}
-
-func selectorString(v any) string {
-	switch typed := v.(type) {
-	case map[string]string:
-		pairs := make([]string, 0, len(typed))
-		for k, v := range typed {
-			pairs = append(pairs, k+"="+v)
-		}
-		sort.Strings(pairs)
-		return strings.Join(pairs, ",")
-	case map[string]any:
-		pairs := make([]string, 0, len(typed))
-		for k, v := range typed {
-			pairs = append(pairs, fmt.Sprintf("%s=%v", k, v))
-		}
-		sort.Strings(pairs)
-		return strings.Join(pairs, ",")
-	default:
-		return ""
-	}
-}
-
-// deduplicateAllowRules removes duplicate allow rules; later entries win.
-func deduplicateAllowRules(rules []map[string]any) []map[string]any {
-	seen := map[string]int{}
-	for i, rule := range rules {
-		key := allowRuleKey(rule)
-		if prev, exists := seen[key]; exists {
-			rules[prev] = nil
-		}
-		seen[key] = i
-	}
-	out := make([]map[string]any, 0, len(rules))
-	for _, rule := range rules {
-		if rule != nil {
-			out = append(out, rule)
-		}
-	}
-	return out
 }
 
 // buildSSO generates or enriches SSO configuration.

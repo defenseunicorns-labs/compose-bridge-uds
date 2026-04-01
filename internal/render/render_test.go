@@ -257,50 +257,6 @@ services:
 	}
 }
 
-func TestAllowRuleInferenceFromDependsOn(t *testing.T) {
-	t.Parallel()
-
-	input := []byte(`name: myapp
-services:
-  web:
-    image: nginx:latest
-    ports:
-      - mode: ingress
-        target: 8080
-        published: "8080"
-        protocol: tcp
-    depends_on:
-      db:
-        condition: service_started
-  db:
-    image: postgres:16
-    expose:
-      - "5432"
-`)
-
-	app, err := compose.LoadCanonicalYAML(input)
-	if err != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", err)
-	}
-	outDir := t.TempDir()
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	for _, want := range []string{
-		"remoteGenerated: IntraNamespace",
-		"web egress to db",
-		"direction: Egress",
-		"port: 5432",
-		"remoteNamespace: myapp",
-	} {
-		if !strings.Contains(udsPackage, want) {
-			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
-		}
-	}
-}
-
 func TestSSOAutoGeneration(t *testing.T) {
 	t.Parallel()
 
@@ -399,57 +355,6 @@ services:
 	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
 	if strings.Contains(udsPackage, "clientId") {
 		t.Fatalf("did not expect SSO when no services have published ports\n%s", udsPackage)
-	}
-}
-
-func TestAllowDeduplication(t *testing.T) {
-	t.Parallel()
-
-	input := []byte(`name: myapp
-x-uds:
-  network:
-    allow:
-      - description: custom override
-        direction: Egress
-        selector:
-          app.kubernetes.io/name: web
-        remoteNamespace: myapp
-        remoteSelector:
-          app.kubernetes.io/name: db
-        port: 5432
-services:
-  web:
-    image: nginx:latest
-    ports:
-      - mode: ingress
-        target: 8080
-        published: "8080"
-        protocol: tcp
-    depends_on:
-      db:
-        condition: service_started
-  db:
-    image: postgres:16
-    expose:
-      - "5432"
-`)
-
-	app, err := compose.LoadCanonicalYAML(input)
-	if err != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", err)
-	}
-	outDir := t.TempDir()
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	// Should contain user's description, not the inferred one
-	if !strings.Contains(udsPackage, "custom override") {
-		t.Fatalf("expected user-provided allow rule to win deduplication\n%s", udsPackage)
-	}
-	if strings.Contains(udsPackage, "web egress to db") {
-		t.Fatalf("expected inferred allow rule to be deduplicated\n%s", udsPackage)
 	}
 }
 

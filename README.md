@@ -1,4 +1,4 @@
-# uds-compose-bridge
+# compose-bridge-uds
 
 A [Docker Compose Bridge](https://docs.docker.com/compose/bridge/) transformation that converts a Compose application into a deployable [UDS](https://uds.defenseunicorns.com/) package. It receives the fully-resolved Compose model as input and produces a Zarf package definition with Kubernetes manifests and a UDS Package CR, ready for `zarf package create` and deploy.
 
@@ -15,7 +15,7 @@ cd examples/full
 docker compose build
 
 # run the transformation
-docker compose bridge convert -t ghcr.io/defenseunicorns-dashdays/compose-bridge-uds:latest
+docker compose bridge convert -t ghcr.io/defenseunicorns-dashdays/compose-bridge-uds
 
 # build and deploy the package
 zarf package create out/
@@ -50,7 +50,7 @@ The bridge automatically generates a [UDS Package CR](https://docs.defenseunicor
 #### What is auto-generated
 
 - **Expose**: services with published `ports:` are exposed on the tenant gateway (`host` = service name, `gateway` = `tenant`, `selector`/`podLabels` = `app.kubernetes.io/name: <service>`)
-- **Network allow**: intra-namespace ingress/egress rules are always included; `depends_on:` relationships generate egress rules to the dependency's primary port
+- **Network allow**: intra-namespace ingress/egress rules are always included, allowing all services in the namespace to communicate
 - **SSO**: a Keycloak client is generated for the first exposed service (`clientId` = project name, `redirectUris` = `https://<host>.uds.dev/*`); omitted when no services are exposed
 
 #### Overriding defaults with `x-uds`
