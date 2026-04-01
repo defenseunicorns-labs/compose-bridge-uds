@@ -69,14 +69,6 @@ type Dependency struct {
 	Condition string
 }
 
-type Expose struct {
-	Service string
-	Host    string
-	Gateway string
-	Port    int
-	Paths   []string
-}
-
 type Package struct {
 	Name            string
 	Namespace       string
@@ -91,7 +83,6 @@ type Service struct {
 	Image          string
 	UsesBuild      bool
 	Ports          []Port
-	ExposeDeclared bool
 	Env            []EnvVar
 	User           string
 	Command        []string
@@ -111,7 +102,6 @@ type App struct {
 	Volumes  map[string]Volume
 	Secrets  map[string]Secret
 	Configs  map[string]Config
-	Exposes  []Expose
 }
 
 func (s Service) PrimaryPort() (Port, error) {

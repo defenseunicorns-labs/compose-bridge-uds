@@ -43,36 +43,35 @@ The transformation maps the Compose model (as defined by the [Compose Specificat
 - **Bind mounts** — use Compose `configs:`, `secrets:`, or named `volumes:` instead
 - **External configs** — configs must define inline `content:`; referencing external files is not supported
 
-### UDS Package CR custom extensions
+### UDS Package CR inference and overrides
 
-Use [`x-uds`](https://docs.docker.com/reference/compose-file/extension/) at the top level of your `compose.yaml` to express UDS-specific configuration that cannot be inferred from the Compose model alone. The `network` and `sso` blocks are passed through as-is into the generated [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/).
+The bridge automatically generates a [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/) from the Compose model. Most configuration is inferred — use [`x-uds`](https://docs.docker.com/reference/compose-file/extension/) at the top level of your `compose.yaml` only to override defaults.
+
+#### What is auto-generated
+
+- **Expose**: services with published `ports:` are exposed on the tenant gateway (`host` = service name, `gateway` = `tenant`, `selector`/`podLabels` = `app.kubernetes.io/name: <service>`)
+- **Network allow**: intra-namespace ingress/egress rules are always included; `depends_on:` relationships generate egress rules to the dependency's primary port
+- **SSO**: a Keycloak client is generated for the first exposed service (`clientId` = project name, `redirectUris` = `https://<host>.uds.dev/*`); omitted when no services are exposed
+
+#### Overriding defaults with `x-uds`
 
 | Key | Purpose |
 |---|---|
 | `x-uds.package.name` | Package name (default: Compose project name) |
 | `x-uds.package.namespace` | Kubernetes namespace (default: Compose project name) |
 | `x-uds.package.version` | Package version (default: `0.1.0`) |
-| `x-uds.network.expose[]` | UDS gateway expose rules (`service`, `host`, `gateway`, `port`, `selector`, `podLabels`) |
-| `x-uds.network.allow[]` | Additional network allow rules (`direction`, `selector`, `remoteNamespace`, `remoteSelector`, `port`) |
-| `x-uds.sso[]` | Keycloak SSO clients (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) |
+| `x-uds.network.expose[]` | Override expose rules; replaces auto-generation when present. Missing fields (`gateway`, `port`, `selector`, `podLabels`) are inferred from the service. |
+| `x-uds.network.allow[]` | Additional network allow rules; merged with (and deduplicated against) auto-generated rules |
+| `x-uds.sso[]` | Override SSO clients; missing fields (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) are inferred |
 
-Intra-namespace allow rules are generated automatically. Services with published `ports:` are auto-exposed on the tenant gateway. Override this per-service with `x-uds.expose`:
+Example — override only the host for an exposed service:
 
 ```yaml
-services:
-  hidden:
-    x-uds:
-      expose: false          # suppress auto-expose
-  web:
-    x-uds:
-      expose: true           # expose with defaults (host = service name, gateway = tenant)
-  frontend:
-    x-uds:
-      expose:                # expose with overrides
-        host: app
-        gateway: tenant
-        port: 3000
-        paths: [/healthz]    # optional uptime check paths
+x-uds:
+  network:
+    expose:
+      - service: server
+        host: hello-world    # override host (default would be "server")
 ```
 
 See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete working example.

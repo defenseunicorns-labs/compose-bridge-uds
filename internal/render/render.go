@@ -35,9 +35,8 @@ func WritePackage(root string, app model.App) error {
 	secretVariables := buildSecretVariables(app.Secrets)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
-		ports := effectiveServicePorts(svc, app.Exposes)
-		if len(ports) > 0 {
-			servicePorts[svc.Name] = ports[0].Number
+		if len(svc.Ports) > 0 {
+			servicePorts[svc.Name] = svc.Ports[0].Number
 		}
 	}
 
@@ -146,7 +145,7 @@ func WritePackage(root string, app model.App) error {
 			}
 		}
 
-		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, app.Exposes, servicePorts)
+		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts)
 		if err != nil {
 			return err
 		}
@@ -157,7 +156,7 @@ func WritePackage(root string, app model.App) error {
 		manifestFiles = append(manifestFiles, deploymentRel)
 
 		serviceRel := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("service-%s.yaml", svc.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc, app.Exposes)); err != nil {
+		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc)); err != nil {
 			return err
 		}
 		manifestFiles = append(manifestFiles, serviceRel)
@@ -244,8 +243,8 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 	return nil
 }
 
-func buildDeployment(appName string, namespace string, svc model.Service, exposes []model.Expose, servicePorts map[string]int) (deploymentManifest, error) {
-	ports := effectiveServicePorts(svc, exposes)
+func buildDeployment(appName string, namespace string, svc model.Service, servicePorts map[string]int) (deploymentManifest, error) {
+	ports := svc.Ports
 	volumes, volumeMounts := buildVolumes(svc)
 	resources := buildResources(svc.Resources)
 	securityContext := buildSecurityContext(svc.User)
@@ -290,8 +289,8 @@ func buildDeployment(appName string, namespace string, svc model.Service, expose
 	return manifest, nil
 }
 
-func buildService(appName string, namespace string, svc model.Service, exposes []model.Expose) serviceManifest {
-	ports := effectiveServicePorts(svc, exposes)
+func buildService(appName string, namespace string, svc model.Service) serviceManifest {
+	ports := svc.Ports
 	manifest := serviceManifest{
 		APIVersion: "v1",
 		Kind:       "Service",
@@ -313,38 +312,30 @@ func buildService(appName string, namespace string, svc model.Service, exposes [
 }
 
 func buildUDSPackage(app model.App) udsPackageManifest {
+	// --- Allow rules ---
 	allow := []map[string]any{
 		{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
 		{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
 	}
+	inferred := buildInferredAllowRules(app)
+	allow = append(allow, inferred...)
 	for _, rule := range app.Package.AdditionalAllow {
 		if item, ok := rule.(map[string]any); ok {
 			allow = append(allow, item)
 		}
 	}
+	allow = deduplicateAllowRules(allow)
 
+	// --- Expose rules ---
 	var expose []any
 	if len(app.Package.NetworkExpose) > 0 {
-		expose = app.Package.NetworkExpose
+		expose = enrichNetworkExposes(app)
 	} else {
-		for _, e := range buildPackageExposes(app) {
-			svcSelector := map[string]string{"app.kubernetes.io/name": e.Service}
-			item := map[string]any{
-				"service":   e.Service,
-				"host":      e.Host,
-				"gateway":   e.Gateway,
-				"port":      e.Port,
-				"selector":  svcSelector,
-				"podLabels": svcSelector,
-			}
-			if len(e.Paths) > 0 {
-				item["uptime"] = map[string]any{
-					"checks": map[string]any{"paths": e.Paths},
-				}
-			}
-			expose = append(expose, item)
-		}
+		expose = buildAutoExposes(app)
 	}
+
+	// --- SSO ---
+	sso := buildSSO(app)
 
 	spec := udsPackageSpec{
 		Network: udsNetwork{
@@ -353,8 +344,8 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 			Allow:       allow,
 		},
 	}
-	if len(app.Package.SSO) > 0 {
-		spec.SSO = app.Package.SSO
+	if len(sso) > 0 {
+		spec.SSO = sso
 	}
 
 	return udsPackageManifest{
@@ -368,33 +359,240 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 	}
 }
 
-func buildPackageExposes(app model.App) []model.Expose {
-	explicitByService := map[string][]model.Expose{}
-	for _, expose := range app.Exposes {
-		explicitByService[expose.Service] = append(explicitByService[expose.Service], expose)
+// buildServiceIndex creates a map from service name to Service for O(1) lookup.
+func buildServiceIndex(services []model.Service) map[string]model.Service {
+	idx := make(map[string]model.Service, len(services))
+	for _, svc := range services {
+		idx[svc.Name] = svc
 	}
+	return idx
+}
 
-	combined := make([]model.Expose, 0, len(app.Exposes)+len(app.Services))
+// setDefault sets key in m only if it is not already present.
+func setDefault(m map[string]any, key string, value any) {
+	if _, exists := m[key]; !exists {
+		m[key] = value
+	}
+}
+
+// buildAutoExposes generates expose entries for all services with published ports.
+func buildAutoExposes(app model.App) []any {
+	var expose []any
 	for _, svc := range app.Services {
-		if explicit, ok := explicitByService[svc.Name]; ok {
-			combined = append(combined, explicit...)
-			continue
-		}
-		if svc.ExposeDeclared {
-			continue
-		}
 		port, ok := primaryPublishedPort(svc.Ports)
 		if !ok {
 			continue
 		}
-		combined = append(combined, model.Expose{
-			Service: svc.Name,
-			Host:    svc.Name,
-			Gateway: "tenant",
-			Port:    port.Number,
+		svcSelector := map[string]string{"app.kubernetes.io/name": svc.Name}
+		expose = append(expose, map[string]any{
+			"service":   svc.Name,
+			"host":      svc.Name,
+			"gateway":   "tenant",
+			"port":      port.Number,
+			"selector":  svcSelector,
+			"podLabels": svcSelector,
 		})
 	}
-	return combined
+	return expose
+}
+
+// enrichNetworkExposes fills in missing fields on user-provided x-uds.network.expose entries.
+func enrichNetworkExposes(app model.App) []any {
+	serviceByName := buildServiceIndex(app.Services)
+	enriched := make([]any, 0, len(app.Package.NetworkExpose))
+
+	for _, raw := range app.Package.NetworkExpose {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			enriched = append(enriched, raw)
+			continue
+		}
+
+		serviceName, _ := item["service"].(string)
+		setDefault(item, "gateway", "tenant")
+		setDefault(item, "host", serviceName)
+
+		if svc, found := serviceByName[serviceName]; found {
+			svcSelector := map[string]string{"app.kubernetes.io/name": svc.Name}
+			setDefault(item, "selector", svcSelector)
+			setDefault(item, "podLabels", svcSelector)
+			if _, exists := item["port"]; !exists {
+				if port, err := svc.PrimaryPort(); err == nil {
+					item["port"] = port.Number
+				}
+			}
+		}
+
+		enriched = append(enriched, item)
+	}
+	return enriched
+}
+
+// buildInferredAllowRules generates egress rules from depends_on relationships.
+func buildInferredAllowRules(app model.App) []map[string]any {
+	serviceByName := buildServiceIndex(app.Services)
+	var rules []map[string]any
+
+	for _, svc := range app.Services {
+		for _, dep := range svc.DependsOn {
+			depSvc, found := serviceByName[dep.Service]
+			if !found {
+				continue
+			}
+			port, err := depSvc.PrimaryPort()
+			if err != nil {
+				continue
+			}
+			rules = append(rules, map[string]any{
+				"description":     fmt.Sprintf("%s egress to %s", svc.Name, dep.Service),
+				"direction":       "Egress",
+				"selector":        map[string]string{"app.kubernetes.io/name": svc.Name},
+				"remoteNamespace": app.Package.Namespace,
+				"remoteSelector":  map[string]string{"app.kubernetes.io/name": dep.Service},
+				"port":            port.Number,
+			})
+		}
+	}
+	return rules
+}
+
+// allowRuleKey builds a canonical deduplication key for an allow rule.
+func allowRuleKey(rule map[string]any) string {
+	dir, _ := rule["direction"].(string)
+	sel := selectorString(rule["selector"])
+	remoteSel := selectorString(rule["remoteSelector"])
+	remoteGen, _ := rule["remoteGenerated"].(string)
+	port := fmt.Sprintf("%v", rule["port"])
+	return dir + "|" + sel + "|" + remoteSel + "|" + remoteGen + "|" + port
+}
+
+func selectorString(v any) string {
+	switch typed := v.(type) {
+	case map[string]string:
+		pairs := make([]string, 0, len(typed))
+		for k, v := range typed {
+			pairs = append(pairs, k+"="+v)
+		}
+		sort.Strings(pairs)
+		return strings.Join(pairs, ",")
+	case map[string]any:
+		pairs := make([]string, 0, len(typed))
+		for k, v := range typed {
+			pairs = append(pairs, fmt.Sprintf("%s=%v", k, v))
+		}
+		sort.Strings(pairs)
+		return strings.Join(pairs, ",")
+	default:
+		return ""
+	}
+}
+
+// deduplicateAllowRules removes duplicate allow rules; later entries win.
+func deduplicateAllowRules(rules []map[string]any) []map[string]any {
+	seen := map[string]int{}
+	for i, rule := range rules {
+		key := allowRuleKey(rule)
+		if prev, exists := seen[key]; exists {
+			rules[prev] = nil
+		}
+		seen[key] = i
+	}
+	out := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		if rule != nil {
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+// buildSSO generates or enriches SSO configuration.
+func buildSSO(app model.App) []any {
+	if len(app.Package.SSO) > 0 {
+		return enrichSSOEntries(app)
+	}
+	return buildInferredSSO(app)
+}
+
+// buildInferredSSO generates a default SSO client from the app's expose rules.
+func buildInferredSSO(app model.App) []any {
+	host, service := findPrimaryExposedService(app)
+	if host == "" {
+		return nil
+	}
+	return []any{
+		map[string]any{
+			"clientId": app.Package.Name,
+			"name":     titleCase(app.Package.Name),
+			"redirectUris": []any{
+				fmt.Sprintf("https://%s.uds.dev/*", host),
+			},
+			"enableAuthserviceSelector": map[string]string{
+				"app.kubernetes.io/name": service,
+			},
+		},
+	}
+}
+
+// enrichSSOEntries fills in missing fields on user-provided x-uds.sso entries.
+func enrichSSOEntries(app model.App) []any {
+	host, service := findPrimaryExposedService(app)
+	enriched := make([]any, 0, len(app.Package.SSO))
+
+	for _, raw := range app.Package.SSO {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			enriched = append(enriched, raw)
+			continue
+		}
+		setDefault(item, "clientId", app.Package.Name)
+		setDefault(item, "name", titleCase(app.Package.Name))
+		if host != "" {
+			setDefault(item, "redirectUris", []any{
+				fmt.Sprintf("https://%s.uds.dev/*", host),
+			})
+		}
+		if service != "" {
+			setDefault(item, "enableAuthserviceSelector", map[string]string{
+				"app.kubernetes.io/name": service,
+			})
+		}
+		enriched = append(enriched, item)
+	}
+	return enriched
+}
+
+// findPrimaryExposedService determines the primary host and service name from expose rules.
+func findPrimaryExposedService(app model.App) (host string, service string) {
+	if len(app.Package.NetworkExpose) > 0 {
+		for _, raw := range app.Package.NetworkExpose {
+			if item, ok := raw.(map[string]any); ok {
+				h, _ := item["host"].(string)
+				s, _ := item["service"].(string)
+				if h == "" {
+					h = s
+				}
+				return h, s
+			}
+		}
+	}
+	for _, svc := range app.Services {
+		if _, ok := primaryPublishedPort(svc.Ports); ok {
+			return svc.Name, svc.Name
+		}
+	}
+	return "", ""
+}
+
+// titleCase converts a hyphenated name to Title Case (e.g. "hello-world" → "Hello World").
+func titleCase(name string) string {
+	words := strings.Split(name, "-")
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
@@ -404,32 +602,6 @@ func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
 		}
 	}
 	return model.Port{}, false
-}
-
-func effectiveServicePorts(svc model.Service, exposes []model.Expose) []model.Port {
-	ports := append([]model.Port(nil), svc.Ports...)
-	seen := map[string]struct{}{}
-	for _, port := range ports {
-		seen[port.Raw] = struct{}{}
-	}
-	for _, expose := range exposes {
-		if expose.Service != svc.Name || expose.Port <= 0 {
-			continue
-		}
-		key := fmt.Sprintf("%d/TCP", expose.Port)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		ports = append(ports, model.Port{Number: expose.Port, Protocol: "TCP", Raw: key})
-	}
-	sort.Slice(ports, func(i, j int) bool {
-		if ports[i].Number == ports[j].Number {
-			return ports[i].Protocol < ports[j].Protocol
-		}
-		return ports[i].Number < ports[j].Number
-	})
-	return ports
 }
 
 func buildVolumes(svc model.Service) ([]volumeSpec, []volumeMountSpec) {

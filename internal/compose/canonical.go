@@ -131,7 +131,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 
 	rawServices, _ := asMap(raw["services"])
 	services := make([]model.Service, 0, len(keys))
-	exposes := []model.Expose{}
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
@@ -169,18 +168,12 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			return model.App{}, fmt.Errorf("service %q must define image", key)
 		}
 
-		serviceExposes, exposeDeclared, err := parseServiceExposes(rawServiceMap, serviceName, ports)
-		if err != nil {
-			return model.App{}, fmt.Errorf("service %q x-uds.expose: %w", key, err)
-		}
-
 		services = append(services, model.Service{
-			Name:           serviceName,
-			Image:          image,
-			UsesBuild:      usesBuild,
-			Ports:          ports,
-			ExposeDeclared: exposeDeclared,
-			Env:            parseEnvironment(rawSvc.Environment),
+			Name:      serviceName,
+			Image:     image,
+			UsesBuild: usesBuild,
+			Ports:     ports,
+			Env:       parseEnvironment(rawSvc.Environment),
 			User:           strings.TrimSpace(rawSvc.User),
 			Command:        copyCommand(rawSvc.Entrypoint),
 			Args:           copyCommand(rawSvc.Command),
@@ -192,7 +185,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			Resources:      parseResources(rawSvc.Deploy),
 			Profiles:       normalizeProfiles(rawSvc.Profiles),
 		})
-		exposes = append(exposes, serviceExposes...)
 	}
 
 	return model.App{
@@ -201,7 +193,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		Volumes:  volumes,
 		Secrets:  secrets,
 		Configs:  configs,
-		Exposes:  exposes,
 	}, nil
 }
 
@@ -563,104 +554,6 @@ func parseResources(raw *types.DeployConfig) model.Resources {
 		out.Requests.Memory = formatUnitBytes(raw.Resources.Reservations.MemoryBytes)
 	}
 	return out
-}
-
-func parseServiceExposes(rawService map[string]any, serviceName string, ports []model.Port) ([]model.Expose, bool, error) {
-	if len(rawService) == 0 {
-		return nil, false, nil
-	}
-	uds, ok := asMap(rawService["x-uds"])
-	if !ok {
-		return nil, false, nil
-	}
-	exposeRaw, exists := uds["expose"]
-	if !exists {
-		return nil, false, nil
-	}
-
-	switch typed := exposeRaw.(type) {
-	case bool:
-		if !typed {
-			return nil, true, nil
-		}
-		expose, err := parseExposeEntry(nil, serviceName, ports)
-		if err != nil {
-			return nil, true, err
-		}
-		return []model.Expose{expose}, true, nil
-	case map[string]any:
-		expose, err := parseExposeEntry(typed, serviceName, ports)
-		if err != nil {
-			return nil, true, err
-		}
-		if expose.Port == 0 {
-			return nil, true, nil
-		}
-		return []model.Expose{expose}, true, nil
-	case []any:
-		out := make([]model.Expose, 0, len(typed))
-		for _, entry := range typed {
-			entryMap, ok := asMap(entry)
-			if !ok {
-				return nil, true, fmt.Errorf("expose list entries must be objects")
-			}
-			expose, err := parseExposeEntry(entryMap, serviceName, ports)
-			if err != nil {
-				return nil, true, err
-			}
-			if expose.Port > 0 {
-				out = append(out, expose)
-			}
-		}
-		return out, true, nil
-	default:
-		return nil, true, fmt.Errorf("unsupported expose shape %T", exposeRaw)
-	}
-}
-
-func parseExposeEntry(raw map[string]any, serviceName string, ports []model.Port) (model.Expose, error) {
-	expose := model.Expose{
-		Service: serviceName,
-		Host:    serviceName,
-		Gateway: "tenant",
-	}
-
-	if raw != nil {
-		if enabled, ok := raw["enabled"].(bool); ok && !enabled {
-			return model.Expose{}, nil
-		}
-		if value := strings.TrimSpace(asString(raw["host"])); value != "" {
-			expose.Host = value
-		}
-		if value := strings.TrimSpace(asString(raw["gateway"])); value != "" {
-			expose.Gateway = value
-		}
-		if value, ok := asInt(raw["port"]); ok {
-			expose.Port = value
-		}
-		if paths := asStringSlice(raw["paths"]); len(paths) > 0 {
-			expose.Paths = paths
-		} else if path := strings.TrimSpace(asString(raw["path"])); path != "" {
-			expose.Paths = []string{path}
-		}
-	}
-
-	if expose.Port == 0 {
-		primary, err := primaryPort(ports)
-		if err != nil {
-			return model.Expose{}, fmt.Errorf("exposed service has no port; set x-uds.expose.port explicitly")
-		}
-		expose.Port = primary.Number
-	}
-
-	return expose, nil
-}
-
-func primaryPort(ports []model.Port) (model.Port, error) {
-	if len(ports) == 0 {
-		return model.Port{}, fmt.Errorf("no ports available")
-	}
-	return ports[0], nil
 }
 
 func normalizeTopLevelVolumes(raw types.Volumes) (map[string]model.Volume, map[string]string, error) {

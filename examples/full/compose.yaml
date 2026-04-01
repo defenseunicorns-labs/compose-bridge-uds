@@ -51,25 +51,3 @@ x-uds:
     expose:
       - service: server
         host: hello-world
-        gateway: tenant
-        port: 8080
-        selector:
-          app.kubernetes.io/name: server
-        podLabels:
-          app.kubernetes.io/name: server
-    allow:
-      - description: hello-world egress to redis
-        direction: Egress
-        selector:
-          app.kubernetes.io/name: server
-        remoteNamespace: hello-world
-        remoteSelector:
-          app.kubernetes.io/name: redis
-        port: 6379
-  sso:
-    - clientId: hello-world
-      name: Hello World
-      redirectUris:
-        - https://hello-world.uds.dev/*
-      enableAuthserviceSelector:
-        app.kubernetes.io/name: server
