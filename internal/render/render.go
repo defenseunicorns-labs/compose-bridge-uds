@@ -425,9 +425,12 @@ func enrichNetworkExposes(app model.App) []any {
 	return enriched
 }
 
-// buildSSO generates or enriches SSO configuration.
+// buildSSO generates, disables, or enriches SSO configuration.
 func buildSSO(app model.App) []any {
-	if len(app.Package.SSO) > 0 {
+	if app.Package.SSOConfigured {
+		if len(app.Package.SSO) == 0 {
+			return nil
+		}
 		return enrichSSOEntries(app)
 	}
 	return buildInferredSSO(app)
@@ -1126,7 +1129,6 @@ type udsNetwork struct {
 type udsServiceMesh struct {
 	Mode string `yaml:"mode"`
 }
-
 
 type zarfPackageConfig struct {
 	APIVersion string          `yaml:"apiVersion,omitempty"`

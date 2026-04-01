@@ -62,7 +62,7 @@ The bridge automatically generates a [UDS Package CR](https://docs.defenseunicor
 | `x-uds.package.version` | Package version (default: `0.1.0`) |
 | `x-uds.network.expose[]` | Override expose rules; replaces auto-generation when present. Missing fields (`gateway`, `port`, `selector`, `podLabels`) are inferred from the service. |
 | `x-uds.network.allow[]` | Additional network allow rules; merged with (and deduplicated against) auto-generated rules |
-| `x-uds.sso[]` | Override SSO clients; missing fields (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) are inferred |
+| `x-uds.sso[]` | Override SSO clients; missing fields (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) are inferred. Set `x-uds.sso: []` to disable inferred SSO. |
 
 Example — override only the host for an exposed service:
 
@@ -75,3 +75,5 @@ x-uds:
 ```
 
 See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete working example.
+
+If `x-uds.sso` is omitted, the bridge infers an SSO client for the first exposed service. If `x-uds.sso` is explicitly set to an empty list, inferred SSO is disabled.
