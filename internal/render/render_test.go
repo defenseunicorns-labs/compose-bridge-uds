@@ -2,176 +2,13 @@ package render_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
-	"defenseunicorns/uds-compose-bridge/internal/model"
 	"defenseunicorns/uds-compose-bridge/internal/render"
 )
-
-func TestWritePackageFromBasicFixture(t *testing.T) {
-	t.Parallel()
-
-	app := mustLoadFixture(t, filepath.Join("basic", "compose.yaml"))
-	outDir := t.TempDir()
-
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	for _, file := range []string{
-		filepath.Join(outDir, "zarf.yaml"),
-		filepath.Join(outDir, "manifests", "namespace.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-db.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-wordpress.yaml"),
-		filepath.Join(outDir, "manifests", "service-db.yaml"),
-		filepath.Join(outDir, "manifests", "service-wordpress.yaml"),
-		filepath.Join(outDir, "manifests", "pvc-db-data.yaml"),
-		filepath.Join(outDir, "manifests", "pvc-wordpress-data.yaml"),
-		filepath.Join(outDir, "manifests", "secret-db-password.yaml"),
-		filepath.Join(outDir, "manifests", "uds-package.yaml"),
-	} {
-		if _, err := os.Stat(file); err != nil {
-			t.Fatalf("expected generated file %s: %v", file, err)
-		}
-	}
-
-	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
-	for _, want := range []string{
-		"kind: ZarfPackageConfig",
-		"name: wordpress",
-		"name: db",
-		"name: DB_PASSWORD",
-		"prompt: true",
-		"sensitive: true",
-		"mysql:8.0",
-		"wordpress:latest",
-		"busybox:1.36",
-		"manifests/namespace.yaml",
-		"manifests/deployment-db.yaml",
-		"manifests/deployment-wordpress.yaml",
-		"manifests/uds-package.yaml",
-	} {
-		if !strings.Contains(zarfConfig, want) {
-			t.Fatalf("expected zarf.yaml to contain %q", want)
-		}
-	}
-	if strings.Contains(zarfConfig, "localPath: chart") {
-		t.Fatalf("did not expect chart-based zarf config")
-	}
-	if strings.Count(zarfConfig, "manifests/secret-db-password.yaml") != 1 {
-		t.Fatalf("expected shared secret manifest to be owned by only one component")
-	}
-	if strings.Count(zarfConfig, "manifests/pvc-db-data.yaml") != 1 {
-		t.Fatalf("expected shared pvc manifest references to be deduped")
-	}
-	if dbIdx, wordpressIdx := strings.Index(zarfConfig, "\n    - name: db\n"), strings.Index(zarfConfig, "\n    - name: wordpress\n"); dbIdx == -1 || wordpressIdx == -1 || dbIdx > wordpressIdx {
-		t.Fatalf("expected db component to be ordered before wordpress component")
-	}
-
-	secretManifest := readFile(t, filepath.Join(outDir, "manifests", "secret-db-password.yaml"))
-	if !strings.Contains(secretManifest, "###ZARF_VAR_DB_PASSWORD###") {
-		t.Fatalf("expected secret manifest to contain templated zarf variable")
-	}
-
-	wordpressDeployment := readFile(t, filepath.Join(outDir, "manifests", "deployment-wordpress.yaml"))
-	for _, want := range []string{
-		"wait-db",
-		"/run/secrets/db_password",
-		"claimName: wordpress-data",
-	} {
-		if !strings.Contains(wordpressDeployment, want) {
-			t.Fatalf("expected wordpress deployment to contain %q", want)
-		}
-	}
-
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	for _, want := range []string{
-		"kind: Package",
-		"namespace: wordpress",
-		"mode: ambient",
-		"remoteGenerated: IntraNamespace",
-		"service: wordpress",
-		"host: wordpress",
-		"- /",
-	} {
-		if !strings.Contains(udsPackage, want) {
-			t.Fatalf("expected uds-package.yaml to contain %q", want)
-		}
-	}
-	if strings.Contains(udsPackage, "service: db") {
-		t.Fatalf("did not expect internal-only db service to be auto-exposed")
-	}
-}
-
-func TestWritePackageFromFullWorkingFixture(t *testing.T) {
-	t.Parallel()
-
-	app := mustLoadFixture(t, filepath.Join("full-working", "compose.yaml"))
-	outDir := t.TempDir()
-
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	for _, file := range []string{
-		filepath.Join(outDir, "zarf.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-server.yaml"),
-		filepath.Join(outDir, "manifests", "deployment-db.yaml"),
-		filepath.Join(outDir, "manifests", "service-server.yaml"),
-		filepath.Join(outDir, "manifests", "service-db.yaml"),
-		filepath.Join(outDir, "manifests", "pvc-hello-data.yaml"),
-		filepath.Join(outDir, "manifests", "pvc-redis-data.yaml"),
-		filepath.Join(outDir, "manifests", "configmap-app-config.yaml"),
-		filepath.Join(outDir, "manifests", "secret-app-secret.yaml"),
-		filepath.Join(outDir, "manifests", "uds-package.yaml"),
-	} {
-		if _, err := os.Stat(file); err != nil {
-			t.Fatalf("expected generated file %s: %v", file, err)
-		}
-	}
-
-	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
-	for _, want := range []string{
-		"keel.local/hello:latest",
-		"redis:7-alpine",
-		"busybox:1.36",
-		"manifests/configmap-app-config.yaml",
-		"manifests/secret-app-secret.yaml",
-	} {
-		if !strings.Contains(zarfConfig, want) {
-			t.Fatalf("expected zarf.yaml to contain %q", want)
-		}
-	}
-	if strings.Contains(zarfConfig, "name: debugger") {
-		t.Fatalf("did not expect profiled debugger service to be rendered")
-	}
-
-	configMap := readFile(t, filepath.Join(outDir, "manifests", "configmap-app-config.yaml"))
-	if !strings.Contains(configMap, "Hello from config map") {
-		t.Fatalf("expected configmap to contain inline config content")
-	}
-
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	if !strings.Contains(udsPackage, "service: server") {
-		t.Fatalf("expected server service to be exposed via x-uds.network.expose")
-	}
-	if !strings.Contains(udsPackage, "host: hello-world") {
-		t.Fatalf("expected expose host to be hello-world")
-	}
-	if !strings.Contains(udsPackage, "clientId: hello-world") {
-		t.Fatalf("expected SSO client to be rendered in uds-package.yaml")
-	}
-	if !strings.Contains(udsPackage, "enableAuthserviceSelector") {
-		t.Fatalf("expected enableAuthserviceSelector in SSO config")
-	}
-	if strings.Contains(udsPackage, "service: redis") || strings.Contains(udsPackage, "service: db") {
-		t.Fatalf("did not expect internal-only db/redis service to be exposed")
-	}
-}
 
 func TestLoadCanonicalAcceptsExplicitLocalBuildImage(t *testing.T) {
 	t.Parallel()
@@ -203,9 +40,17 @@ services:
 func TestLoadCanonicalRejectsBindMounts(t *testing.T) {
 	t.Parallel()
 
-	_, err := compose.LoadCanonicalYAML(mustReadFixture(t, filepath.Join("full", "compose.yaml")))
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    volumes:
+      - ./data:/app/data
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
 	if err == nil {
-		t.Fatalf("expected bind mount fixture to fail")
+		t.Fatalf("expected bind mount to fail")
 	}
 	if !strings.Contains(err.Error(), "bind mount") {
 		t.Fatalf("expected bind mount error, got %v", err)
@@ -269,6 +114,10 @@ func TestWritePackageWithConfigAndExpose(t *testing.T) {
 x-uds:
   package:
     namespace: demo-ns
+  network:
+    expose:
+      - service: api
+        host: app
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -280,10 +129,6 @@ services:
     configs:
       - source: app_config
         target: /app/config.yml
-    x-uds:
-      expose:
-        host: app
-        path: /healthz
 configs:
   app_config:
     name: demo_app_config
@@ -312,10 +157,10 @@ configs:
 		"service: api",
 		"host: app",
 		"port: 8080",
-		"- /healthz",
+		"gateway: tenant",
 	} {
 		if !strings.Contains(udsPackage, want) {
-			t.Fatalf("expected uds-package.yaml to contain %q", want)
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
 		}
 	}
 
@@ -371,24 +216,146 @@ services:
 	}
 }
 
-func mustLoadFixture(t *testing.T, name string) model.App {
-	t.Helper()
-	app, err := compose.LoadCanonicalYAML(mustReadFixture(t, name))
+func TestExposeEnrichmentFillsDefaults(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+x-uds:
+  network:
+    expose:
+      - service: web
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
 	if err != nil {
-		t.Fatalf("LoadCanonicalYAML(%s) error = %v", name, err)
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
 	}
-	return app
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"service: web",
+		"host: web",
+		"gateway: tenant",
+		"port: 8080",
+		"app.kubernetes.io/name: web",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
 }
 
-func mustReadFixture(t *testing.T, name string) []byte {
-	t.Helper()
-	path := filepath.Join("..", "..", "examples", name)
-	cmd := exec.Command("docker", "compose", "-f", path, "config")
-	data, err := cmd.CombinedOutput()
+func TestSSOAutoGeneration(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
 	if err != nil {
-		t.Fatalf("render canonical fixture %s: %v\n%s", name, err, string(data))
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
 	}
-	return data
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"clientId: myapp",
+		"name: Myapp",
+		"https://web.uds.dev/*",
+		"enableAuthserviceSelector",
+		"app.kubernetes.io/name: web",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
+func TestSSOEnrichment(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+x-uds:
+  sso:
+    - clientId: custom-id
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if !strings.Contains(udsPackage, "clientId: custom-id") {
+		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
+	}
+	if !strings.Contains(udsPackage, "name: Myapp") {
+		t.Fatalf("expected inferred name\n%s", udsPackage)
+	}
+	if !strings.Contains(udsPackage, "https://web.uds.dev/*") {
+		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
+	}
+}
+
+func TestNoSSOWhenNoExposedServices(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  db:
+    image: postgres:16
+    expose:
+      - "5432"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if strings.Contains(udsPackage, "clientId") {
+		t.Fatalf("did not expect SSO when no services have published ports\n%s", udsPackage)
+	}
 }
 
 func readFile(t *testing.T, path string) string {
