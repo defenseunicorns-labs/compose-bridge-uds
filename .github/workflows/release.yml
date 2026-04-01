@@ -1,25 +1,22 @@
-name: release-please
-
+name: Create Release
 on:
   push:
-    branches:
-      - main
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+    tags:
+      - "v*" # Trigger for any tag starting with 'v', e.g., v1.2.3
 
 jobs:
-  release-please:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create a release
     steps:
-      - uses: googleapis/release-please-action@v4
-        with:
-          # this assumes that you have created a personal access token
-          # (PAT) and configured it as a GitHub action secret named
-          # `RELEASE_TOKEN` (this secret name is not important).
-          token: ${{ secrets.RELEASE_TOKEN }}
-          # this is a built-in strategy in release-please, see "Action Inputs"
-          # for more options
-          release-type: simple
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes
