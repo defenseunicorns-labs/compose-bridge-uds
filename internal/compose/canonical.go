@@ -236,6 +236,9 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
 	}
+	if monitor, ok := asSlice(rootUDS["monitor"]); ok {
+		config.Monitor = append(config.Monitor, monitor...)
+	}
 	if len(config.AdditionalAllow) == 0 {
 		if allow, ok := asSlice(rootUDS["allow"]); ok {
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)

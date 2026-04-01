@@ -177,7 +177,11 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	packageRel := filepath.ToSlash(filepath.Join("manifests", "uds-package.yaml"))
-	if err := writeYAMLFile(filepath.Join(manifestDir, "uds-package.yaml"), buildUDSPackage(app)); err != nil {
+	udsPackage, err := buildUDSPackage(app)
+	if err != nil {
+		return err
+	}
+	if err := writeYAMLFile(filepath.Join(manifestDir, "uds-package.yaml"), udsPackage); err != nil {
 		return err
 	}
 	if len(ordered) > 0 {
@@ -311,7 +315,7 @@ func buildService(appName string, namespace string, svc model.Service) serviceMa
 	return manifest
 }
 
-func buildUDSPackage(app model.App) udsPackageManifest {
+func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 	// --- Allow rules ---
 	allow := []map[string]any{
 		{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
@@ -333,6 +337,10 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 
 	// --- SSO ---
 	sso := buildSSO(app)
+	monitor, err := buildMonitor(app)
+	if err != nil {
+		return udsPackageManifest{}, err
+	}
 
 	spec := udsPackageSpec{
 		Network: udsNetwork{
@@ -344,6 +352,9 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 	if len(sso) > 0 {
 		spec.SSO = sso
 	}
+	if len(monitor) > 0 {
+		spec.Monitor = monitor
+	}
 
 	return udsPackageManifest{
 		APIVersion: "uds.dev/v1alpha1",
@@ -353,7 +364,7 @@ func buildUDSPackage(app model.App) udsPackageManifest {
 			Namespace: app.Package.Namespace,
 		},
 		Spec: spec,
-	}
+	}, nil
 }
 
 // buildServiceIndex creates a map from service name to Service for O(1) lookup.
@@ -434,6 +445,207 @@ func buildSSO(app model.App) []any {
 		return enrichSSOEntries(app)
 	}
 	return buildInferredSSO(app)
+}
+
+func buildMonitor(app model.App) ([]any, error) {
+	if len(app.Package.Monitor) == 0 {
+		return nil, nil
+	}
+
+	serviceByName := buildServiceIndex(app.Services)
+	enriched := make([]any, 0, len(app.Package.Monitor))
+
+	for _, raw := range app.Package.Monitor {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			enriched = append(enriched, raw)
+			continue
+		}
+
+		entry := cloneAnyMap(item)
+		serviceRaw, hasService := entry["service"]
+		serviceName := strings.TrimSpace(rawString(serviceRaw))
+		if !hasService {
+			enriched = append(enriched, entry)
+			continue
+		}
+		if serviceName == "" {
+			return nil, fmt.Errorf("x-uds.monitor service must be a non-empty string")
+		}
+
+		svc, found := serviceByName[serviceName]
+		if !found {
+			return nil, fmt.Errorf("x-uds.monitor service %q does not match a compose service", serviceName)
+		}
+
+		delete(entry, "service")
+		selector := serviceSelector(svc.Name)
+		setDefault(entry, "selector", selector)
+		setDefault(entry, "podSelector", selector)
+		setDefault(entry, "kind", "ServiceMonitor")
+		setDefault(entry, "path", "/metrics")
+		if err := enrichMonitorPortFields(entry, svc); err != nil {
+			return nil, fmt.Errorf("x-uds.monitor service %q: %w", serviceName, err)
+		}
+		defaultMonitorAuthorization(entry)
+
+		enriched = append(enriched, entry)
+	}
+
+	return enriched, nil
+}
+
+func enrichMonitorPortFields(entry map[string]any, svc model.Service) error {
+	ports := monitorPortsForService(svc)
+	if len(ports) == 0 {
+		return fmt.Errorf("service has no declared TCP ports for monitor inference")
+	}
+
+	portName, hasPortName := lookupRawString(entry, "portName")
+	targetPort, hasTargetPort := lookupRawInt(entry, "targetPort")
+
+	switch {
+	case hasPortName && hasTargetPort:
+		matchedByName, ok := findMonitorPortByName(ports, portName)
+		if !ok {
+			return fmt.Errorf("portName %q does not match any declared service port (%s)", portName, formatMonitorPorts(ports))
+		}
+		if matchedByName.Number != targetPort {
+			return fmt.Errorf("portName %q resolves to %d, but targetPort is %d", portName, matchedByName.Number, targetPort)
+		}
+		entry["portName"] = matchedByName.Name
+		entry["targetPort"] = matchedByName.Number
+	case hasPortName:
+		matchedByName, ok := findMonitorPortByName(ports, portName)
+		if !ok {
+			return fmt.Errorf("portName %q does not match any declared service port (%s)", portName, formatMonitorPorts(ports))
+		}
+		entry["portName"] = matchedByName.Name
+		entry["targetPort"] = matchedByName.Number
+	case hasTargetPort:
+		matchedByNumber, ok := findMonitorPortByNumber(ports, targetPort)
+		if !ok {
+			return fmt.Errorf("targetPort %d does not match any declared service port (%s)", targetPort, formatMonitorPorts(ports))
+		}
+		entry["portName"] = matchedByNumber.Name
+		entry["targetPort"] = matchedByNumber.Number
+	default:
+		if len(ports) != 1 {
+			return fmt.Errorf("service has multiple declared TCP ports; set portName or targetPort (%s)", formatMonitorPorts(ports))
+		}
+		entry["portName"] = ports[0].Name
+		entry["targetPort"] = ports[0].Number
+	}
+
+	return nil
+}
+
+func defaultMonitorAuthorization(entry map[string]any) {
+	authorization, ok := entry["authorization"].(map[string]any)
+	if !ok {
+		return
+	}
+	authorizationCopy := cloneAnyMap(authorization)
+	setDefault(authorizationCopy, "type", "Bearer")
+	entry["authorization"] = authorizationCopy
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+	clone := make(map[string]any, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+type monitorPort struct {
+	Name   string
+	Number int
+}
+
+func monitorPortsForService(svc model.Service) []monitorPort {
+	ports := make([]monitorPort, 0, len(svc.Ports))
+	for i, port := range svc.Ports {
+		if !strings.EqualFold(port.Protocol, "TCP") {
+			continue
+		}
+		ports = append(ports, monitorPort{
+			Name:   buildPortName(i, port),
+			Number: port.Number,
+		})
+	}
+	return ports
+}
+
+func findMonitorPortByName(ports []monitorPort, name string) (monitorPort, bool) {
+	for _, port := range ports {
+		if port.Name == name {
+			return port, true
+		}
+	}
+	return monitorPort{}, false
+}
+
+func findMonitorPortByNumber(ports []monitorPort, number int) (monitorPort, bool) {
+	for _, port := range ports {
+		if port.Number == number {
+			return port, true
+		}
+	}
+	return monitorPort{}, false
+}
+
+func formatMonitorPorts(ports []monitorPort) string {
+	values := make([]string, 0, len(ports))
+	for _, port := range ports {
+		values = append(values, fmt.Sprintf("%s=%d", port.Name, port.Number))
+	}
+	return strings.Join(values, ", ")
+}
+
+func lookupRawString(values map[string]any, key string) (string, bool) {
+	raw, exists := values[key]
+	if !exists {
+		return "", false
+	}
+	text := strings.TrimSpace(rawString(raw))
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
+func rawString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func lookupRawInt(values map[string]any, key string) (int, bool) {
+	raw, exists := values[key]
+	if !exists {
+		return 0, false
+	}
+	switch typed := raw.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case uint64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
 }
 
 // buildInferredSSO generates a default SSO client from the app's expose rules.
@@ -1117,6 +1329,7 @@ type udsPackageManifest struct {
 
 type udsPackageSpec struct {
 	Network udsNetwork `yaml:"network"`
+	Monitor []any      `yaml:"monitor,omitempty"`
 	SSO     []any      `yaml:"sso,omitempty"`
 }
 

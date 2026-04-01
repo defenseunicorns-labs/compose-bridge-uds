@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 APP_NAME = os.getenv("APP_NAME", "hello-world")
 APP_MESSAGE = os.getenv("APP_MESSAGE", "A slightly more glamorous hello")
 APP_PORT = int(os.getenv("APP_PORT", "8080"))
+REQUEST_COUNT = 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -21,9 +22,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _metrics(self):
+        body = "\n".join(
+            [
+                "# HELP hello_world_requests_total Total HTTP requests handled by the example app.",
+                "# TYPE hello_world_requests_total counter",
+                f"hello_world_requests_total {REQUEST_COUNT}",
+                "# HELP hello_world_up Whether the example app process is running.",
+                "# TYPE hello_world_up gauge",
+                "hello_world_up 1",
+                "",
+            ]
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        global REQUEST_COUNT
+        REQUEST_COUNT += 1
+
         if self.path in ("/health", "/healthz"):
             self._json(200, {"status": "ok", "app": APP_NAME})
+            return
+
+        if self.path == "/metrics":
+            self._metrics()
             return
 
         if self.path != "/":

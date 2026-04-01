@@ -404,6 +404,269 @@ services:
 	}
 }
 
+func TestMonitorEnrichment(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: api
+      description: API metrics
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"monitor:",
+		"description: API metrics",
+		"selector:",
+		"podSelector:",
+		"app.kubernetes.io/name: api",
+		"portName: http",
+		"targetPort: 9090",
+		"path: /metrics",
+		"kind: ServiceMonitor",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+	if strings.Contains(udsPackage, "service: api") {
+		t.Fatalf("did not expect bridge-only service field in rendered monitor\n%s", udsPackage)
+	}
+}
+
+func TestMonitorAuthorizationDefaultsAndExplicitFields(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: api
+      kind: PodMonitor
+      path: /custom/metrics
+      authorization:
+        credentials:
+          name: metrics-auth-secret
+          key: token
+          optional: false
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"kind: PodMonitor",
+		"path: /custom/metrics",
+		"portName: http",
+		"targetPort: 9090",
+		"authorization:",
+		"type: Bearer",
+		"name: metrics-auth-secret",
+		"key: token",
+		"optional: false",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
+func TestMonitorResolvesPortNameFromTargetPort(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: api
+      targetPort: 9090
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"targetPort: 9090",
+		"portName: port-9090-tcp",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
+func TestMonitorPassthroughWithoutService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - selector:
+        app: api
+      podSelector:
+        app: api
+      portName: metrics
+      targetPort: 9090
+      path: /stats/metrics
+      kind: PodMonitor
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	for _, want := range []string{
+		"selector:",
+		"podSelector:",
+		"app: api",
+		"portName: metrics",
+		"targetPort: 9090",
+		"path: /stats/metrics",
+		"kind: PodMonitor",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
+func TestMonitorRejectsAmbiguousServicePorts(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: api
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	err = render.WritePackage(outDir, app)
+	if err == nil {
+		t.Fatalf("expected WritePackage() to fail for ambiguous monitor ports")
+	}
+	if !strings.Contains(err.Error(), "multiple declared TCP ports") {
+		t.Fatalf("expected ambiguous port error, got %v", err)
+	}
+}
+
+func TestMonitorRejectsUnknownService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: missing
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	err = render.WritePackage(outDir, app)
+	if err == nil {
+		t.Fatalf("expected WritePackage() to fail for unknown monitor service")
+	}
+	if !strings.Contains(err.Error(), `x-uds.monitor service "missing"`) {
+		t.Fatalf("expected unknown service error, got %v", err)
+	}
+}
+
+func TestMonitorRejectsMismatchedPortNameAndTargetPort(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor:
+    - service: api
+      portName: http
+      targetPort: 9090
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+      - "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	err = render.WritePackage(outDir, app)
+	if err == nil {
+		t.Fatalf("expected WritePackage() to fail for mismatched monitor port fields")
+	}
+	if !strings.Contains(err.Error(), `portName "http" resolves to 8080, but targetPort is 9090`) {
+		t.Fatalf("expected mismatched port error, got %v", err)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
