@@ -4,22 +4,19 @@ A [Docker Compose Bridge](https://docs.docker.com/compose/bridge/) transformatio
 
 ## Quickstart
 
-The following example deploys UDS Core Slim Dev on k3d, and packages an example `compose.yaml`:
+The following example deploys UDS Core Slim Dev on k3d, and also packages and deploys Wordpress and MySQL:
 
 ```sh
 # (optionally) deploy UDS Core Slim Dev
 uds deploy k3d-core-slim-dev
 
-# build the example
-cd examples/full
-docker compose build
-
-# run the transformation
+# perform the tranformation
+cd examples/simple
 docker compose bridge convert -t ghcr.io/defenseunicorns-dashdays/compose-bridge-uds
 
 # build and deploy the package
 zarf package create out/
-zarf package deploy zarf-package-hello-world-*.tar.zst
+zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 
 ## Compose structure
