@@ -8,6 +8,7 @@ import (
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
 	"defenseunicorns/uds-compose-bridge/internal/render"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestLoadCanonicalAcceptsExplicitLocalBuildImage(t *testing.T) {
@@ -667,6 +668,133 @@ services:
 	}
 }
 
+func TestWritePackageRendersCABundleConfigMap(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: trust-demo
+x-uds:
+  caBundle:
+    configMap:
+      name: custom-trust-bundle
+      key: roots.pem
+      labels:
+        uds.dev/pod-reload: "true"
+      annotations:
+        uds.dev/pod-reload-selector: app=api
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readYAMLMap(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	caBundle := mustMap(t, spec["caBundle"])
+	configMap := mustMap(t, caBundle["configMap"])
+	if got := configMap["name"]; got != "custom-trust-bundle" {
+		t.Fatalf("expected caBundle configMap name, got %#v", got)
+	}
+	if got := configMap["key"]; got != "roots.pem" {
+		t.Fatalf("expected caBundle configMap key, got %#v", got)
+	}
+	labels := mustMap(t, configMap["labels"])
+	if got := labels["uds.dev/pod-reload"]; got != "true" {
+		t.Fatalf("expected caBundle label, got %#v", got)
+	}
+	annotations := mustMap(t, configMap["annotations"])
+	if got := annotations["uds.dev/pod-reload-selector"]; got != "app=api" {
+		t.Fatalf("expected caBundle annotation, got %#v", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "uds-config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected uds-config.yaml to be omitted, stat err = %v", err)
+	}
+}
+
+func TestLoadCanonicalRejectsRemovedCABundleFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		field   string
+		value   string
+		message string
+	}{
+		{name: "certs", field: "CA_BUNDLE_CERTS", value: `"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t"`, message: "invalid x-uds.caBundle.CA_BUNDLE_CERTS"},
+		{name: "dod", field: "CA_BUNDLE_INCLUDE_DOD_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS"},
+		{name: "public", field: "CA_BUNDLE_INCLUDE_PUBLIC_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_PUBLIC_CERTS"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte("name: trust-demo\nx-uds:\n  caBundle:\n    " + tt.field + ": " + tt.value + "\nservices:\n  api:\n    image: ghcr.io/acme/api:1.0.0\n")
+
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil {
+				t.Fatalf("expected removed caBundle field %s to fail", tt.field)
+			}
+			if !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected removed caBundle field error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadCanonicalRejectsUnsupportedCABundleConfigMapField(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: trust-demo
+x-uds:
+  caBundle:
+    configMap:
+      target: custom-trust-bundle
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil {
+		t.Fatalf("expected unsupported caBundle configMap field to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap.target") {
+		t.Fatalf("expected unsupported caBundle configMap field error, got %v", err)
+	}
+}
+
+func TestLoadCanonicalRejectsInvalidCABundleConfigMapType(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: trust-demo
+x-uds:
+  caBundle:
+    configMap: nope
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil {
+		t.Fatalf("expected invalid caBundle configMap type to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap") {
+		t.Fatalf("expected caBundle configMap validation error, got %v", err)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -674,4 +802,23 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read file %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func readYAMLMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	content := readFile(t, path)
+	var out map[string]any
+	if err := yamlv3.Unmarshal([]byte(content), &out); err != nil {
+		t.Fatalf("unmarshal yaml %s: %v", path, err)
+	}
+	return out
+}
+
+func mustMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	m, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", value)
+	}
+	return m
 }

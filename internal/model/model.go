@@ -78,6 +78,7 @@ type Package struct {
 	AdditionalAllow []any
 	SSOConfigured   bool
 	SSO             []any
+	CABundle        map[string]any
 }
 
 type Service struct {

@@ -349,6 +349,9 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 			Allow:       allow,
 		},
 	}
+	if len(app.Package.CABundle) > 0 {
+		spec.CABundle = app.Package.CABundle
+	}
 	if len(sso) > 0 {
 		spec.SSO = sso
 	}
@@ -1328,9 +1331,10 @@ type udsPackageManifest struct {
 }
 
 type udsPackageSpec struct {
-	Network udsNetwork `yaml:"network"`
-	Monitor []any      `yaml:"monitor,omitempty"`
-	SSO     []any      `yaml:"sso,omitempty"`
+	Network  udsNetwork     `yaml:"network"`
+	Monitor  []any          `yaml:"monitor,omitempty"`
+	SSO      []any          `yaml:"sso,omitempty"`
+	CABundle map[string]any `yaml:"caBundle,omitempty"`
 }
 
 type udsNetwork struct {

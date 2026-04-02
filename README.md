@@ -24,7 +24,7 @@ zarf package deploy zarf-package-hello-world-*.tar.zst
 
 ## Compose structure
 
-The transformation maps the Compose model (as defined by the [Compose Specification](https://compose-spec.io/)) to Kubernetes resources (Deployments, Services, PVCs, ConfigMaps, Secrets) and uses `x-uds` [extension](https://docs.docker.com/reference/compose-file/extension/) keys to generate a UDS Package CR for network policy, monitoring, and SSO.
+The transformation maps the Compose model (as defined by the [Compose Specification](https://compose-spec.io/)) to Kubernetes resources (Deployments, Services, PVCs, ConfigMaps, Secrets) and uses `x-uds` [extension](https://docs.docker.com/reference/compose-file/extension/) keys to generate a UDS Package CR for network policy, monitoring, SSO, and trust-bundle distribution.
 
 ### Supported Compose configuration
 
@@ -65,6 +65,7 @@ The bridge automatically generates a [UDS Package CR](https://docs.defenseunicor
 | `x-uds.network.allow[]` | Additional network allow rules; merged with (and deduplicated against) auto-generated rules |
 | `x-uds.monitor[]` | Add monitor rules for Prometheus scraping. When `service` is set, missing `selector`, `podSelector`, `portName`, `targetPort`, `path`, and `kind` are inferred from the Compose service. |
 | `x-uds.sso[]` | Override SSO clients; missing fields (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) are inferred. Set `x-uds.sso: []` to disable inferred SSO. |
+| `x-uds.caBundle.configMap` | Customize the operator-managed trust bundle ConfigMap metadata for this package namespace. This renders to `spec.caBundle` in `manifests/uds-package.yaml`. |
 
 Example — override only the host for an exposed service:
 
@@ -81,3 +82,5 @@ See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete wo
 If `x-uds.sso` is omitted, the bridge infers an SSO client for the first exposed service. If `x-uds.sso` is explicitly set to an empty list, inferred SSO is disabled.
 
 `x-uds.monitor[]` is opt-in. Each entry may be written as a raw UDS `spec.monitor[]` item, or may use the bridge-only `service` key to infer labels and port metadata from a Compose service. For multi-port services, set either `portName` or `targetPort` so the bridge can select the intended metrics port.
+
+`x-uds.caBundle.configMap` customizes the namespace trust-bundle `ConfigMap` created by UDS Core for this package. The actual trust bundle contents are configured separately in UDS Core and are not part of the Package CR.

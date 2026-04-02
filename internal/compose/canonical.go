@@ -250,7 +250,71 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 		config.SSO = append(config.SSO, sso...)
 	}
 
+	if rawCABundle, exists := rootUDS["caBundle"]; exists {
+		caBundle, ok := asMap(rawCABundle)
+		if !ok {
+			return model.Package{}, fmt.Errorf("invalid x-uds.caBundle: must be an object")
+		}
+
+		for key, value := range caBundle {
+			if key != "configMap" {
+				return model.Package{}, fmt.Errorf("invalid x-uds.caBundle.%s: unsupported field", key)
+			}
+			configMap, err := normalizeCABundleConfigMap(value)
+			if err != nil {
+				return model.Package{}, err
+			}
+			config.CABundle = map[string]any{"configMap": configMap}
+		}
+	}
+
 	return config, nil
+}
+
+func normalizeCABundleConfigMap(value any) (map[string]any, error) {
+	configMap, ok := asMap(value)
+	if !ok {
+		return nil, fmt.Errorf("invalid x-uds.caBundle.configMap: must be an object")
+	}
+
+	normalized := map[string]any{}
+	for key, raw := range configMap {
+		switch key {
+		case "name", "key":
+			value := strings.TrimSpace(asString(raw))
+			if value == "" {
+				return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: must be a non-empty string", key)
+			}
+			normalized[key] = value
+		case "labels", "annotations":
+			value, err := normalizeStringMap(raw, fmt.Sprintf("x-uds.caBundle.configMap.%s", key))
+			if err != nil {
+				return nil, err
+			}
+			normalized[key] = value
+		default:
+			return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: unsupported field", key)
+		}
+	}
+
+	return normalized, nil
+}
+
+func normalizeStringMap(value any, field string) (map[string]string, error) {
+	items, ok := asMap(value)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s: must be an object", field)
+	}
+
+	normalized := make(map[string]string, len(items))
+	for key, raw := range items {
+		text, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s.%s: must be a string", field, key)
+		}
+		normalized[key] = text
+	}
+	return normalized, nil
 }
 
 func validateBuildImage(serviceName string, image string, rawService map[string]any) error {

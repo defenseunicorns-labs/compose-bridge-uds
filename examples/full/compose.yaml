@@ -54,4 +54,10 @@ x-uds:
   monitor:
     - service: server
       description: Server metrics
+  # caBundle:
+  #   configMap:
+  #     name: uds-trust-bundle
+  #     key: ca-bundle.pem
+  #     labels:
+  #       uds.dev/pod-reload: "true"
   # sso: []
