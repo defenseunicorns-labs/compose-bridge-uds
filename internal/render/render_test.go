@@ -668,7 +668,7 @@ services:
 	}
 }
 
-func TestWritePackageRendersCABundleAndUDSConfig(t *testing.T) {
+func TestWritePackageRendersCABundleConfigMap(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: trust-demo
@@ -681,9 +681,6 @@ x-uds:
         uds.dev/pod-reload: "true"
       annotations:
         uds.dev/pod-reload-selector: app=api
-    CA_BUNDLE_CERTS: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t
-    CA_BUNDLE_INCLUDE_DOD_CERTS: true
-    CA_BUNDLE_INCLUDE_PUBLIC_CERTS: "false"
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -719,64 +716,48 @@ services:
 		t.Fatalf("expected caBundle annotation, got %#v", got)
 	}
 
-	udsConfig := readYAMLMap(t, filepath.Join(outDir, "uds-config.yaml"))
-	variables := mustMap(t, udsConfig["variables"])
-	core := mustMap(t, variables["core"])
-	if got := core["CA_BUNDLE_CERTS"]; got != "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t" {
-		t.Fatalf("expected CA_BUNDLE_CERTS, got %#v", got)
-	}
-	if got := core["CA_BUNDLE_INCLUDE_DOD_CERTS"]; got != "true" {
-		t.Fatalf("expected CA_BUNDLE_INCLUDE_DOD_CERTS to be normalized to string, got %#v", got)
-	}
-	if got := core["CA_BUNDLE_INCLUDE_PUBLIC_CERTS"]; got != "false" {
-		t.Fatalf("expected CA_BUNDLE_INCLUDE_PUBLIC_CERTS to be normalized to string, got %#v", got)
+	if _, err := os.Stat(filepath.Join(outDir, "uds-config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected uds-config.yaml to be omitted, stat err = %v", err)
 	}
 }
 
-func TestWritePackageRendersUDSConfigWithoutPackageCABundle(t *testing.T) {
+func TestLoadCanonicalRejectsRemovedCABundleFields(t *testing.T) {
 	t.Parallel()
 
-	input := []byte(`name: trust-demo
-x-uds:
-  caBundle:
-    CA_BUNDLE_INCLUDE_PUBLIC_CERTS: true
-services:
-  api:
-    image: ghcr.io/acme/api:1.0.0
-    expose:
-      - "8080"
-`)
-
-	app, err := compose.LoadCanonicalYAML(input)
-	if err != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", err)
-	}
-	outDir := t.TempDir()
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
+	tests := []struct {
+		name    string
+		field   string
+		value   string
+		message string
+	}{
+		{name: "certs", field: "CA_BUNDLE_CERTS", value: `"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t"`, message: "invalid x-uds.caBundle.CA_BUNDLE_CERTS"},
+		{name: "dod", field: "CA_BUNDLE_INCLUDE_DOD_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS"},
+		{name: "public", field: "CA_BUNDLE_INCLUDE_PUBLIC_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_PUBLIC_CERTS"},
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
-	if strings.Contains(udsPackage, "caBundle:") {
-		t.Fatalf("did not expect package caBundle without configMap override\n%s", udsPackage)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte("name: trust-demo\nx-uds:\n  caBundle:\n    " + tt.field + ": " + tt.value + "\nservices:\n  api:\n    image: ghcr.io/acme/api:1.0.0\n")
 
-	udsConfig := readYAMLMap(t, filepath.Join(outDir, "uds-config.yaml"))
-	variables := mustMap(t, udsConfig["variables"])
-	core := mustMap(t, variables["core"])
-	if got := core["CA_BUNDLE_INCLUDE_PUBLIC_CERTS"]; got != "true" {
-		t.Fatalf("expected CA_BUNDLE_INCLUDE_PUBLIC_CERTS to be rendered, got %#v", got)
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil {
+				t.Fatalf("expected removed caBundle field %s to fail", tt.field)
+			}
+			if !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected removed caBundle field error, got %v", err)
+			}
+		})
 	}
 }
 
-func TestWritePackageOmitsUDSConfigWithoutCABundleVariables(t *testing.T) {
+func TestLoadCanonicalRejectsUnsupportedCABundleConfigMapField(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: trust-demo
 x-uds:
   caBundle:
     configMap:
-      name: custom-trust-bundle
+      target: custom-trust-bundle
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -784,17 +765,12 @@ services:
       - "8080"
 `)
 
-	app, err := compose.LoadCanonicalYAML(input)
-	if err != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil {
+		t.Fatalf("expected unsupported caBundle configMap field to fail")
 	}
-	outDir := t.TempDir()
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(outDir, "uds-config.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("expected uds-config.yaml to be omitted, stat err = %v", err)
+	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap.target") {
+		t.Fatalf("expected unsupported caBundle configMap field error, got %v", err)
 	}
 }
 
@@ -816,28 +792,6 @@ services:
 	}
 	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap") {
 		t.Fatalf("expected caBundle configMap validation error, got %v", err)
-	}
-}
-
-func TestLoadCanonicalRejectsInvalidCABundleBoolType(t *testing.T) {
-	t.Parallel()
-
-	input := []byte(`name: trust-demo
-x-uds:
-  caBundle:
-    CA_BUNDLE_INCLUDE_DOD_CERTS:
-      nope: true
-services:
-  api:
-    image: ghcr.io/acme/api:1.0.0
-`)
-
-	_, err := compose.LoadCanonicalYAML(input)
-	if err == nil {
-		t.Fatalf("expected invalid caBundle bool type to fail")
-	}
-	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS") {
-		t.Fatalf("expected caBundle boolean validation error, got %v", err)
 	}
 }
 

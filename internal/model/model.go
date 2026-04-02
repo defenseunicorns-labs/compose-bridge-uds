@@ -81,12 +81,6 @@ type Package struct {
 	CABundle        map[string]any
 }
 
-type Core struct {
-	CABundleCerts              string
-	CABundleIncludeDoDCerts    *bool
-	CABundleIncludePublicCerts *bool
-}
-
 type Service struct {
 	Name        string
 	Image       string
@@ -107,7 +101,6 @@ type Service struct {
 
 type App struct {
 	Package  Package
-	Core     Core
 	Services []Service
 	Volumes  map[string]Volume
 	Secrets  map[string]Secret

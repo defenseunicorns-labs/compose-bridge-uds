@@ -66,7 +66,6 @@ The bridge automatically generates a [UDS Package CR](https://docs.defenseunicor
 | `x-uds.monitor[]` | Add monitor rules for Prometheus scraping. When `service` is set, missing `selector`, `podSelector`, `portName`, `targetPort`, `path`, and `kind` are inferred from the Compose service. |
 | `x-uds.sso[]` | Override SSO clients; missing fields (`clientId`, `name`, `redirectUris`, `enableAuthserviceSelector`) are inferred. Set `x-uds.sso: []` to disable inferred SSO. |
 | `x-uds.caBundle.configMap` | Customize the operator-managed trust bundle ConfigMap metadata for this package namespace. This renders to `spec.caBundle` in `manifests/uds-package.yaml`. |
-| `x-uds.caBundle.CA_BUNDLE_*` | Set UDS Core trust-bundle source variables. These render to `out/uds-config.yaml`, not to the Package CR. |
 
 Example — override only the host for an exposed service:
 
@@ -84,4 +83,4 @@ If `x-uds.sso` is omitted, the bridge infers an SSO client for the first exposed
 
 `x-uds.monitor[]` is opt-in. Each entry may be written as a raw UDS `spec.monitor[]` item, or may use the bridge-only `service` key to infer labels and port metadata from a Compose service. For multi-port services, set either `portName` or `targetPort` so the bridge can select the intended metrics port.
 
-`x-uds.caBundle` is split on output. `configMap` customizes the namespace trust-bundle `ConfigMap` created by UDS Core for this package, while `CA_BUNDLE_CERTS`, `CA_BUNDLE_INCLUDE_DOD_CERTS`, and `CA_BUNDLE_INCLUDE_PUBLIC_CERTS` render to a helper `uds-config.yaml` under `variables.core`. `CA_BUNDLE_CERTS` must be supplied as a base64-encoded PEM bundle, matching the UDS Core documentation.
+`x-uds.caBundle.configMap` customizes the namespace trust-bundle `ConfigMap` created by UDS Core for this package. The actual trust bundle contents are configured separately in UDS Core and are not part of the Package CR.
