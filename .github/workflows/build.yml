@@ -36,7 +36,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/defenseunicorns-dashdays/compose-bridge-uds
+          images: ghcr.io/defenseunicorns-labs/compose-bridge-uds
           tags: |
             type=semver,pattern={{version}}
             type=edge,branch=main
