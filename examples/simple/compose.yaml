@@ -14,6 +14,7 @@ services:
       - db_password
     volumes:
       - wordpress_data:/var/www/html
+      - ./themes:/var/www/html/wp-content/themes  # bind mount: skipped during k8s conversion
     depends_on:
       - db
 
