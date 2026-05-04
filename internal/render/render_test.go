@@ -374,6 +374,44 @@ services:
 	}
 }
 
+func TestWritePackageSanitizesComposePortNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: port-name-demo
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+    ports:
+      - name: WEB__UI
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: "123"
+        target: 9090
+        published: "9090"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "manifests", "service-web.yaml"))
+	for _, want := range []string{
+		"name: web-ui",
+		"name: port-9090-tcp",
+	} {
+		if !strings.Contains(service, want) {
+			t.Fatalf("expected service port name %q\n%s", want, service)
+		}
+	}
+}
+
 func TestExposeEnrichmentFillsDefaults(t *testing.T) {
 	t.Parallel()
 

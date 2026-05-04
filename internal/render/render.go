@@ -994,9 +994,13 @@ func sanitizePortName(raw string) string {
 	name := strings.ToLower(strings.TrimSpace(raw))
 	name = strings.ReplaceAll(name, "_", "-")
 	name = invalidPortNameRunes.ReplaceAllString(name, "-")
+	name = repeatedPortNameHyphens.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-")
-	if len(name) > 63 {
-		name = strings.TrimRight(name[:63], "-")
+	if len(name) > 15 {
+		name = strings.Trim(name[:15], "-")
+	}
+	if !portNameLetter.MatchString(name) {
+		return ""
 	}
 	return name
 }
@@ -1166,6 +1170,8 @@ func dedupeStrings(values []string) []string {
 
 var invalidManifestNameRunes = regexp.MustCompile(`[^a-z0-9.-]+`)
 var invalidPortNameRunes = regexp.MustCompile(`[^a-z0-9-]+`)
+var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
+var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidSecretVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
 
 func sanitizeManifestName(raw string) string {
