@@ -112,6 +112,10 @@ type Service struct {
 	Ports       []Port
 	Env         []EnvVar
 	User        string
+	Privileged  bool
+	CapAdd      []string
+	CapDrop     []string
+	SecurityOpts []string
 	Command     []string
 	Args        []string
 	Healthcheck *Healthcheck

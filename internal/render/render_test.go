@@ -990,6 +990,272 @@ services:
 	}
 }
 
+func TestExemptionForRootUser(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		user string
+	}{
+		{"named root", "root"},
+		{"uid zero", "0"},
+		{"uid:gid zero", "0:0"},
+		{"root:root", "root:root"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte("name: myapp\nservices:\n  gitea:\n    image: gitea:latest\n    user: " + tc.user + "\n")
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+			for _, want := range []string{
+				"kind: Exemption",
+				"namespace: uds-policy-exemptions",
+				"RequireNonRootUser",
+				"^gitea-.*",
+			} {
+				if !strings.Contains(exemption, want) {
+					t.Fatalf("expected uds-exemption.yaml to contain %q\n%s", want, exemption)
+				}
+			}
+			if strings.Contains(exemption, "DisallowPrivileged") {
+				t.Fatalf("did not expect DisallowPrivileged in root-user exemption\n%s", exemption)
+			}
+		})
+	}
+}
+
+func TestExemptionForPrivileged(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: homelab
+services:
+  runner:
+    image: gitea/act_runner:latest
+    privileged: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	for _, want := range []string{
+		"kind: Exemption",
+		"namespace: uds-policy-exemptions",
+		"DisallowPrivileged",
+		"^runner-.*",
+		"privileged policy exemption for homelab runner",
+	} {
+		if !strings.Contains(exemption, want) {
+			t.Fatalf("expected uds-exemption.yaml to contain %q\n%s", want, exemption)
+		}
+	}
+	if strings.Contains(exemption, "RequireNonRootUser") {
+		t.Fatalf("did not expect RequireNonRootUser for non-root privileged service\n%s", exemption)
+	}
+}
+
+func TestExemptionForCapAdd(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  net:
+    image: myapp:latest
+    cap_add:
+      - NET_ADMIN
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	for _, want := range []string{
+		"DropAllCapabilities",
+		"RestrictCapabilities",
+		"^net-.*",
+	} {
+		if !strings.Contains(exemption, want) {
+			t.Fatalf("expected uds-exemption.yaml to contain %q\n%s", want, exemption)
+		}
+	}
+}
+
+func TestExemptionForSeccompUnconfined(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  svc:
+    image: myapp:latest
+    security_opt:
+      - seccomp:unconfined
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	if !strings.Contains(exemption, "RestrictSeccomp") {
+		t.Fatalf("expected RestrictSeccomp in exemption\n%s", exemption)
+	}
+}
+
+func TestNoExemptionForSecureService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  api:
+    image: myapp:latest
+    user: "1000"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "manifests", "uds-exemption.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected uds-exemption.yaml to be absent for a secure service, stat err = %v", err)
+	}
+}
+
+func TestNoExemptionForCapDropOnly(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  api:
+    image: myapp:latest
+    cap_drop:
+      - ALL
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "manifests", "uds-exemption.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected uds-exemption.yaml to be absent for cap_drop-only service, stat err = %v", err)
+	}
+}
+
+func TestExemptionMultipleServicesInZarf(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: homelab
+services:
+  gitea:
+    image: gitea:latest
+    user: root
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3000"
+        protocol: tcp
+  runner:
+    image: gitea/act_runner:latest
+    privileged: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	for _, want := range []string{
+		"RequireNonRootUser",
+		"^gitea-.*",
+		"root user policy exemption for homelab gitea",
+		"DisallowPrivileged",
+		"^runner-.*",
+		"privileged policy exemption for homelab runner",
+		"namespace: uds-policy-exemptions",
+	} {
+		if !strings.Contains(exemption, want) {
+			t.Fatalf("expected uds-exemption.yaml to contain %q\n%s", want, exemption)
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	if !strings.Contains(zarfConfig, "manifests/uds-exemption.yaml") {
+		t.Fatalf("expected zarf.yaml to reference uds-exemption.yaml\n%s", zarfConfig)
+	}
+}
+
+func TestCapDropUpdatesSecurityContext(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+services:
+  api:
+    image: myapp:latest
+    cap_drop:
+      - ALL
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "manifests", "deployment-api.yaml"))
+	for _, want := range []string{
+		"capabilities:",
+		"drop:",
+		"- ALL",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
+		}
+	}
+
 func firstExposeRule(t *testing.T, path string) map[string]any {
 	t.Helper()
 	udsPackage := readYAMLMap(t, path)
