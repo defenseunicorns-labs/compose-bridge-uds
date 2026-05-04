@@ -4,7 +4,11 @@ services:
   wordpress:
     image: wordpress:latest
     ports:
-      - "8000:80"
+      - name: http
+        target: 80
+        published: "8000"
+        protocol: tcp
+        app_protocol: http
     environment:
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_USER: wordpress
