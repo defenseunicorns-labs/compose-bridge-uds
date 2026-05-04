@@ -217,6 +217,201 @@ services:
 	}
 }
 
+func TestWritePackageAutoExposeUsesComposePortDeclarationOrder(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: homelab
+services:
+  gitea:
+    image: docker.gitea.com/gitea:1.25.5
+    ports:
+      - "3000:3000"
+      - "222:22"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if got := expose["port"]; got != 3000 {
+		t.Fatalf("expected first declared published port 3000 to be auto-exposed, got %#v", got)
+	}
+}
+
+func TestWritePackageAutoExposePrefersWebAppProtocolHint(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: homelab
+services:
+  gitea:
+    image: docker.gitea.com/gitea:1.25.5
+    ports:
+      - name: ssh
+        target: 22
+        published: "222"
+        protocol: tcp
+        app_protocol: ssh
+      - name: web
+        target: 3000
+        published: "3000"
+        protocol: tcp
+        app_protocol: http
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if got := expose["port"]; got != 3000 {
+		t.Fatalf("expected app_protocol http port 3000 to be auto-exposed instead of SSH, got %#v", got)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "manifests", "service-gitea.yaml"))
+	if !strings.Contains(service, "appProtocol: http") {
+		t.Fatalf("expected Service port to preserve app_protocol hint\n%s", service)
+	}
+}
+
+func TestWritePackageAutoExposePrefersWebPortNameHint(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: homelab
+services:
+  gitea:
+    image: docker.gitea.com/gitea:1.25.5
+    ports:
+      - name: ssh
+        target: 22
+        published: "222"
+        protocol: tcp
+      - name: web
+        target: 3000
+        published: "3000"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if got := expose["port"]; got != 3000 {
+		t.Fatalf("expected web-named port 3000 to be auto-exposed instead of SSH, got %#v", got)
+	}
+}
+
+func TestWritePackageAutoExposeAllowsNonHTTPPortsWithoutFiltering(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: ssh-only
+services:
+  bastion:
+    image: ghcr.io/acme/bastion:1.0.0
+    ports:
+      - "222:22"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if got := expose["port"]; got != 22 {
+		t.Fatalf("expected first declared published port 22 to remain eligible for auto-expose, got %#v", got)
+	}
+}
+
+func TestWritePackageAutoExposeAllowsUDPPublishedPortsWithoutFiltering(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: dns-demo
+services:
+  dns:
+    image: ghcr.io/acme/dns:1.0.0
+    ports:
+      - "1053:53/udp"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	if got := expose["port"]; got != 53 {
+		t.Fatalf("expected UDP port 53 to remain eligible for auto-expose, got %#v", got)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "manifests", "service-dns.yaml"))
+	if !strings.Contains(service, "protocol: UDP") {
+		t.Fatalf("expected Service port to preserve UDP protocol\n%s", service)
+	}
+}
+
+func TestWritePackageSanitizesComposePortNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: port-name-demo
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+    ports:
+      - name: WEB__UI
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: "123"
+        target: 9090
+        published: "9090"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "manifests", "service-web.yaml"))
+	for _, want := range []string{
+		"name: web-ui",
+		"name: port-9090-tcp",
+	} {
+		if !strings.Contains(service, want) {
+			t.Fatalf("expected service port name %q\n%s", want, service)
+		}
+	}
+}
+
 func TestExposeEnrichmentFillsDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -793,6 +988,18 @@ services:
 	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap") {
 		t.Fatalf("expected caBundle configMap validation error, got %v", err)
 	}
+}
+
+func firstExposeRule(t *testing.T, path string) map[string]any {
+	t.Helper()
+	udsPackage := readYAMLMap(t, path)
+	spec := mustMap(t, udsPackage["spec"])
+	network := mustMap(t, spec["network"])
+	exposes, ok := network["expose"].([]any)
+	if !ok || len(exposes) == 0 {
+		t.Fatalf("expected at least one expose rule in %s, got %#v", path, network["expose"])
+	}
+	return mustMap(t, exposes[0])
 }
 
 func readFile(t *testing.T, path string) string {

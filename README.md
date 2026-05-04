@@ -63,7 +63,7 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 | `depends_on:` | Converted to init-container wait logic using `netcat` (busybox). The dependency must declare a port. |
 | `healthcheck:` | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes. |
 | `deploy.resources` | `limits` and `reservations` map to Pod resource requests/limits. |
-| `ports:` | Services with published ports are auto-exposed via the UDS tenant gateway. `expose:` (internal-only) ports are not exposed externally. |
+| `ports:` | Published ports are auto-exposed via the UDS tenant gateway. `expose:` (internal-only) ports are not exposed externally. Compose port declaration order is preserved, and long-syntax `name` / `app_protocol` hints are used to prefer web ports for multi-port services. |
 
 ## Unsupported Compose configuration
 
@@ -76,7 +76,7 @@ Most of the UDS Package CR is inferred from your Compose model. Reach for `x-uds
 
 ### Auto-generated
 
-- **Expose** — services with published `ports:` are exposed on the tenant gateway (`host` = service name, `gateway` = `tenant`, `selector`/`podLabels` = `app.kubernetes.io/name: <service>`).
+- **Expose** — services with published `ports:` are exposed on the tenant gateway (`host` = service name, `gateway` = `tenant`, `selector`/`podLabels` = `app.kubernetes.io/name: <service>`). For multi-port services, the bridge prefers ports whose Compose `app_protocol` or `name` indicates web traffic (`http`, `https`, `http2`, `h2c`, `grpc`, `grpcs`, `web`, `www`), then falls back to the first declared published port. Ports are not filtered by port number or transport protocol.
 - **Network allow** — intra-namespace ingress/egress rules are always included so services in the namespace can communicate.
 - **SSO** — a Keycloak client is generated for the first exposed service (`clientId` = project name, `redirectUris` = `https://<host>.uds.dev/*`). Omitted when no services are exposed.
 
@@ -111,6 +111,7 @@ See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete wo
 
 ### Notes on specific keys
 
+- **Auto-expose port selection** — For services with multiple published ports, prefer Compose long syntax with `name` and/or `app_protocol` to identify the web-facing port, or use `x-uds.network.expose[].port` to pin the intended port if inference is ambiguous. The bridge does not automatically skip SSH, DNS, UDP, or other non-HTTP-looking ports.
 - **`x-uds.sso`** — If omitted, the bridge infers an SSO client for the first exposed service. If explicitly set to an empty list (`x-uds.sso: []`), inferred SSO is disabled.
 - **`x-uds.monitor[]`** — Each entry may be a raw UDS `spec.monitor[]` item, or may use the bridge-only `service` key to infer labels and port metadata. For multi-port services, set either `portName` or `targetPort` so the bridge picks the intended metrics port.
 - **`x-uds.caBundle.configMap`** — Customizes the namespace trust-bundle ConfigMap created by UDS Core. The actual trust bundle contents are configured separately in UDS Core and are not part of the Package CR.
