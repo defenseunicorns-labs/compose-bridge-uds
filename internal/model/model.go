@@ -1,6 +1,9 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	DefaultVersion      = "0.1.0"
@@ -8,10 +11,31 @@ const (
 )
 
 type Port struct {
-	Number    int
-	Protocol  string
-	Raw       string
-	Published bool
+	Number      int
+	Protocol    string
+	Raw         string
+	Published   bool
+	Name        string
+	AppProtocol string
+}
+
+func (p Port) HasWebHint() bool {
+	return IsWebPortHint(p.AppProtocol) || IsWebPortHint(p.Name)
+}
+
+func IsWebPortHint(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		normalized = normalized[idx+1:]
+	}
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+
+	switch normalized {
+	case "http", "https", "http2", "h2c", "grpc", "grpcs", "web", "www":
+		return true
+	default:
+		return false
+	}
 }
 
 type EnvVar struct {

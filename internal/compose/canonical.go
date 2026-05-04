@@ -430,12 +430,19 @@ func parsePorts(rawPorts []types.ServicePortConfig, expose types.StringOrNumberL
 			continue
 		}
 		proto := protocolOrDefault(raw.Protocol)
-		key := fmt.Sprintf("%d/%s", raw.Target, proto)
+		key := portKey(int(raw.Target), proto)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		ports = append(ports, model.Port{Number: int(raw.Target), Protocol: proto, Raw: key, Published: true})
+		ports = append(ports, model.Port{
+			Number:      int(raw.Target),
+			Protocol:    proto,
+			Raw:         key,
+			Published:   true,
+			Name:        strings.TrimSpace(raw.Name),
+			AppProtocol: strings.TrimSpace(raw.AppProtocol),
+		})
 	}
 
 	for _, token := range expose {
@@ -443,7 +450,7 @@ func parsePorts(rawPorts []types.ServicePortConfig, expose types.StringOrNumberL
 		if err != nil {
 			return nil, err
 		}
-		key := fmt.Sprintf("%d/%s", target, proto)
+		key := portKey(target, proto)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -451,13 +458,11 @@ func parsePorts(rawPorts []types.ServicePortConfig, expose types.StringOrNumberL
 		ports = append(ports, model.Port{Number: target, Protocol: proto, Raw: key})
 	}
 
-	sort.Slice(ports, func(i, j int) bool {
-		if ports[i].Number == ports[j].Number {
-			return ports[i].Protocol < ports[j].Protocol
-		}
-		return ports[i].Number < ports[j].Number
-	})
 	return ports, nil
+}
+
+func portKey(number int, proto string) string {
+	return fmt.Sprintf("%d/%s", number, protocolOrDefault(proto))
 }
 
 func parsePortToken(token string) (int, string, error) {

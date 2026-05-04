@@ -397,7 +397,7 @@ func setDefault(m map[string]any, key string, value any) {
 	}
 }
 
-// buildAutoExposes generates expose entries for all services with published ports.
+// buildAutoExposes generates tenant-gateway expose entries for services with published ports.
 func buildAutoExposes(app model.App) []any {
 	var expose []any
 	for _, svc := range app.Services {
@@ -439,7 +439,9 @@ func enrichNetworkExposes(app model.App) []any {
 			setDefault(item, "selector", svcSelector)
 			setDefault(item, "podLabels", svcSelector)
 			if _, exists := item["port"]; !exists {
-				if port, err := svc.PrimaryPort(); err == nil {
+				if port, ok := primaryGatewayPort(svc.Ports, false); ok {
+					item["port"] = port.Number
+				} else if port, err := svc.PrimaryPort(); err == nil {
 					item["port"] = port.Number
 				}
 			}
@@ -744,12 +746,25 @@ func titleCase(name string) string {
 }
 
 func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
+	return primaryGatewayPort(ports, true)
+}
+
+func primaryGatewayPort(ports []model.Port, requirePublished bool) (model.Port, bool) {
 	for _, port := range ports {
-		if port.Published {
+		if gatewayPortCandidate(port, requirePublished) && port.HasWebHint() {
+			return port, true
+		}
+	}
+	for _, port := range ports {
+		if gatewayPortCandidate(port, requirePublished) {
 			return port, true
 		}
 	}
 	return model.Port{}, false
+}
+
+func gatewayPortCandidate(port model.Port, requirePublished bool) bool {
+	return !requirePublished || port.Published
 }
 
 func buildVolumes(svc model.Service) ([]volumeSpec, []volumeMountSpec) {
@@ -875,10 +890,11 @@ func buildServicePorts(ports []model.Port) []servicePort {
 	out := make([]servicePort, 0, len(ports))
 	for i, port := range ports {
 		out = append(out, servicePort{
-			Name:       buildPortName(i, port),
-			Port:       port.Number,
-			Protocol:   strings.ToUpper(port.Protocol),
-			TargetPort: port.Number,
+			Name:        buildPortName(i, port),
+			Port:        port.Number,
+			Protocol:    strings.ToUpper(port.Protocol),
+			TargetPort:  port.Number,
+			AppProtocol: port.AppProtocol,
 		})
 	}
 	return out
@@ -1072,10 +1088,28 @@ func buildSecretVariableName(secretName string, used map[string]struct{}) string
 }
 
 func buildPortName(index int, port model.Port) string {
+	if name := sanitizePortName(port.Name); name != "" {
+		return name
+	}
 	if index == 0 && strings.EqualFold(port.Protocol, "TCP") {
 		return "http"
 	}
 	return fmt.Sprintf("port-%d-%s", port.Number, strings.ToLower(port.Protocol))
+}
+
+func sanitizePortName(raw string) string {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	name = strings.ReplaceAll(name, "_", "-")
+	name = invalidPortNameRunes.ReplaceAllString(name, "-")
+	name = repeatedPortNameHyphens.ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	if len(name) > 15 {
+		name = strings.Trim(name[:15], "-")
+	}
+	if !portNameLetter.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 func resolveSecretTargetPath(source string, target string) string {
@@ -1242,6 +1276,9 @@ func dedupeStrings(values []string) []string {
 }
 
 var invalidManifestNameRunes = regexp.MustCompile(`[^a-z0-9.-]+`)
+var invalidPortNameRunes = regexp.MustCompile(`[^a-z0-9-]+`)
+var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
+var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidSecretVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
 
 func sanitizeManifestName(raw string) string {
@@ -1454,10 +1491,11 @@ type serviceSpec struct {
 }
 
 type servicePort struct {
-	Name       string `yaml:"name,omitempty"`
-	Port       int    `yaml:"port"`
-	TargetPort int    `yaml:"targetPort,omitempty"`
-	Protocol   string `yaml:"protocol,omitempty"`
+	Name        string `yaml:"name,omitempty"`
+	Port        int    `yaml:"port"`
+	TargetPort  int    `yaml:"targetPort,omitempty"`
+	Protocol    string `yaml:"protocol,omitempty"`
+	AppProtocol string `yaml:"appProtocol,omitempty"`
 }
 
 type udsPackageManifest struct {
