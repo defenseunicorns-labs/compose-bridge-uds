@@ -1059,7 +1059,7 @@ services:
 		"namespace: uds-policy-exemptions",
 		"DisallowPrivileged",
 		"^runner-.*",
-		"homelab runner policy exemption",
+		"privileged policy exemption for homelab runner",
 	} {
 		if !strings.Contains(exemption, want) {
 			t.Fatalf("expected uds-exemption.yaml to contain %q\n%s", want, exemption)
@@ -1208,10 +1208,10 @@ services:
 	for _, want := range []string{
 		"RequireNonRootUser",
 		"^gitea-.*",
-		"homelab gitea policy exemption",
+		"root user policy exemption for homelab gitea",
 		"DisallowPrivileged",
 		"^runner-.*",
-		"homelab runner policy exemption",
+		"privileged policy exemption for homelab runner",
 		"namespace: uds-policy-exemptions",
 	} {
 		if !strings.Contains(exemption, want) {

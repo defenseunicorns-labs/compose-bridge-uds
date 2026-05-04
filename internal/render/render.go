@@ -996,6 +996,23 @@ func hasSeccompUnconfined(securityOpts []string) bool {
 	return false
 }
 
+func serviceExemptionType(svc model.Service) string {
+	var types []string
+	if isRootUser(svc.User) {
+		types = append(types, "root user")
+	}
+	if svc.Privileged {
+		types = append(types, "privileged")
+	}
+	if len(svc.CapAdd) > 0 {
+		types = append(types, "Linux capabilities")
+	}
+	if hasSeccompUnconfined(svc.SecurityOpts) {
+		types = append(types, "seccomp")
+	}
+	return strings.Join(types, " and ")
+}
+
 func serviceExemptionPolicies(svc model.Service) []string {
 	var policies []string
 	if isRootUser(svc.User) {
@@ -1021,7 +1038,7 @@ func buildUDSExemption(app model.App) *udsExemptionManifest {
 			continue
 		}
 		exemptions = append(exemptions, udsExemptionEntry{
-			Title: fmt.Sprintf("%s %s policy exemption", app.Package.Name, svc.Name),
+			Title: fmt.Sprintf("%s policy exemption for %s %s", serviceExemptionType(svc), app.Package.Name, svc.Name),
 			Matcher: udsExemptionMatcher{
 				Kind:      "pod",
 				Namespace: app.Package.Namespace,
