@@ -189,6 +189,17 @@ func WritePackage(root string, app model.App) error {
 		ordered[last].ManifestFiles = dedupeStrings(append(ordered[last].ManifestFiles, packageRel))
 	}
 
+	if exemption := buildUDSExemption(app); exemption != nil {
+		exemptionRel := filepath.ToSlash(filepath.Join("manifests", "uds-exemption.yaml"))
+		if err := writeYAMLFile(filepath.Join(manifestDir, "uds-exemption.yaml"), exemption); err != nil {
+			return err
+		}
+		if len(ordered) > 0 {
+			last := len(ordered) - 1
+			ordered[last].ManifestFiles = dedupeStrings(append(ordered[last].ManifestFiles, exemptionRel))
+		}
+	}
+
 	dedupeSharedManifests(ordered)
 
 	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, ordered); err != nil {
@@ -251,7 +262,7 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 	ports := svc.Ports
 	volumes, volumeMounts := buildVolumes(svc)
 	resources := buildResources(svc.Resources)
-	securityContext := buildSecurityContext(svc.User)
+	securityContext := buildSecurityContext(svc)
 	initContainers := buildDependencyInitContainers(svc, servicePorts)
 
 	container := containerSpec{
@@ -899,28 +910,124 @@ func buildResources(spec model.Resources) *resourceRequirements {
 	return resources
 }
 
-func buildSecurityContext(user string) *securityContext {
+func buildSecurityContext(svc model.Service) *securityContext {
+	ctx := &securityContext{}
+	hasAny := false
+
+	user := strings.TrimSpace(svc.User)
+	if user != "" {
+		base := user
+		if strings.Contains(base, ":") {
+			base = strings.SplitN(base, ":", 2)[0]
+		}
+		if !strings.EqualFold(base, "root") {
+			if uid, err := strconv.ParseInt(base, 10, 64); err == nil {
+				ctx.RunAsUser = &uid
+				nonRoot := uid != 0
+				ctx.RunAsNonRoot = &nonRoot
+			} else {
+				nonRoot := true
+				ctx.RunAsNonRoot = &nonRoot
+			}
+			hasAny = true
+		}
+	}
+
+	if svc.Privileged {
+		t := true
+		ctx.Privileged = &t
+		hasAny = true
+	}
+
+	if len(svc.CapAdd) > 0 || len(svc.CapDrop) > 0 {
+		ctx.Capabilities = &capabilitiesSpec{
+			Add:  svc.CapAdd,
+			Drop: svc.CapDrop,
+		}
+		hasAny = true
+	}
+
+	if !hasAny {
+		return nil
+	}
+	return ctx
+}
+
+func isRootUser(user string) bool {
 	trimmed := strings.TrimSpace(user)
 	if trimmed == "" {
-		return nil
+		return false
 	}
 	base := trimmed
 	if strings.Contains(base, ":") {
 		base = strings.SplitN(base, ":", 2)[0]
 	}
+	base = strings.TrimSpace(base)
 	if strings.EqualFold(base, "root") {
+		return true
+	}
+	uid, err := strconv.ParseInt(base, 10, 64)
+	return err == nil && uid == 0
+}
+
+func hasSeccompUnconfined(securityOpts []string) bool {
+	for _, opt := range securityOpts {
+		normalized := strings.ToLower(strings.TrimSpace(opt))
+		if normalized == "seccomp:unconfined" || normalized == "seccomp=unconfined" {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceExemptionPolicies(svc model.Service) []string {
+	var policies []string
+	if isRootUser(svc.User) {
+		policies = append(policies, "RequireNonRootUser")
+	}
+	if svc.Privileged {
+		policies = append(policies, "DisallowPrivileged")
+	}
+	if len(svc.CapAdd) > 0 {
+		policies = append(policies, "DropAllCapabilities", "RestrictCapabilities")
+	}
+	if hasSeccompUnconfined(svc.SecurityOpts) {
+		policies = append(policies, "RestrictSeccomp")
+	}
+	return policies
+}
+
+func buildUDSExemption(app model.App) *udsExemptionManifest {
+	var exemptions []udsExemptionEntry
+	for _, svc := range app.Services {
+		policies := serviceExemptionPolicies(svc)
+		if len(policies) == 0 {
+			continue
+		}
+		exemptions = append(exemptions, udsExemptionEntry{
+			Title: fmt.Sprintf("%s %s policy exemption", app.Package.Name, svc.Name),
+			Matcher: udsExemptionMatcher{
+				Kind:      "pod",
+				Namespace: app.Package.Namespace,
+				Name:      fmt.Sprintf("^%s-.*", svc.Name),
+			},
+			Policies: policies,
+		})
+	}
+	if len(exemptions) == 0 {
 		return nil
 	}
-	context := &securityContext{}
-	if uid, err := strconv.ParseInt(base, 10, 64); err == nil {
-		context.RunAsUser = &uid
-		nonRoot := uid != 0
-		context.RunAsNonRoot = &nonRoot
-		return context
+	return &udsExemptionManifest{
+		APIVersion: "uds.dev/v1alpha1",
+		Kind:       "Exemption",
+		Metadata: objectMeta{
+			Name:      app.Package.Name,
+			Namespace: "uds-policy-exemptions",
+		},
+		Spec: udsExemptionSpec{
+			Exemptions: exemptions,
+		},
 	}
-	nonRoot := true
-	context.RunAsNonRoot = &nonRoot
-	return context
 }
 
 func buildProbe(healthcheck *model.Healthcheck) *probe {
@@ -1273,8 +1380,38 @@ type resourceRequirements struct {
 }
 
 type securityContext struct {
-	RunAsNonRoot *bool  `yaml:"runAsNonRoot,omitempty"`
-	RunAsUser    *int64 `yaml:"runAsUser,omitempty"`
+	RunAsNonRoot *bool              `yaml:"runAsNonRoot,omitempty"`
+	RunAsUser    *int64             `yaml:"runAsUser,omitempty"`
+	Privileged   *bool              `yaml:"privileged,omitempty"`
+	Capabilities *capabilitiesSpec  `yaml:"capabilities,omitempty"`
+}
+
+type capabilitiesSpec struct {
+	Add  []string `yaml:"add,omitempty"`
+	Drop []string `yaml:"drop,omitempty"`
+}
+
+type udsExemptionManifest struct {
+	APIVersion string             `yaml:"apiVersion"`
+	Kind       string             `yaml:"kind"`
+	Metadata   objectMeta         `yaml:"metadata"`
+	Spec       udsExemptionSpec   `yaml:"spec"`
+}
+
+type udsExemptionSpec struct {
+	Exemptions []udsExemptionEntry `yaml:"exemptions"`
+}
+
+type udsExemptionEntry struct {
+	Title    string               `yaml:"title"`
+	Matcher  udsExemptionMatcher  `yaml:"matcher"`
+	Policies []string             `yaml:"policies"`
+}
+
+type udsExemptionMatcher struct {
+	Kind      string `yaml:"kind"`
+	Namespace string `yaml:"namespace"`
+	Name      string `yaml:"name"`
 }
 
 type volumeSpec struct {
