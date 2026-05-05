@@ -124,6 +124,10 @@ See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete wo
 
 When Compose security settings conflict with UDS secure-by-default policies, the bridge writes `manifests/uds-exemption.yaml` with an `Exemption` scoped to each matching service's namespace and pod name pattern. No exemption file is emitted when all services are compliant.
 
+UDS Core enforces a restrictive baseline for workloads by default: containers are expected to run as non-root, avoid privileged mode, drop Linux capabilities, and use an approved seccomp profile. Those defaults are intentional defense-in-depth controls, but many Compose applications were written for a less constrained runtime. A container image that starts normally under Docker Compose may fail after package deploy if it expects root filesystem access, privileged host access, added capabilities, or an unconfined seccomp profile. In Kubernetes this often shows up as a pod stuck in `CrashLoopBackOff`, `CreateContainerConfigError`, or another startup failure caused by admission policy or missing permissions.
+
+The generated exemption is the bridge's way of preserving that Compose intent while still making the security tradeoff visible in the rendered package. You need an exemption only when the application truly depends on one of these less-restricted settings. Prefer changing the image or Compose configuration to satisfy the UDS baseline when you can; keep the exemption when the workload cannot run correctly without it.
+
 | Compose input | Generated UDS policy exemption |
 |---|---|
 | `user: root`, `user: 0`, or equivalent UID/GID forms | `RequireNonRootUser` |
