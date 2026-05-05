@@ -8,6 +8,7 @@ import (
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
 	"defenseunicorns/uds-compose-bridge/internal/render"
+
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -38,7 +39,7 @@ services:
 	}
 }
 
-func TestLoadCanonicalRejectsBindMounts(t *testing.T) {
+func TestLoadCanonicalSkipsBindMounts(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -49,16 +50,20 @@ services:
       - ./data:/app/data
 `)
 
-	_, err := compose.LoadCanonicalYAML(input)
-	if err == nil {
-		t.Fatalf("expected bind mount to fail")
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("expected bind mount to be skipped, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "bind mount") {
-		t.Fatalf("expected bind mount error, got %v", err)
+	for _, svc := range app.Services {
+		for _, vm := range svc.Volumes {
+			if vm.Target == "/app/data" {
+				t.Fatalf("bind mount should have been skipped, but found volume mount for /app/data")
+			}
+		}
 	}
 }
 
-func TestLoadCanonicalFileRejectsBindMountsAfterEnvFileNormalization(t *testing.T) {
+func TestLoadCanonicalFileSkipsBindMountsAfterEnvFileNormalization(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -80,11 +85,8 @@ services:
 	}
 
 	_, err := compose.LoadCanonicalFile(composePath)
-	if err == nil {
-		t.Fatalf("expected bind mount fixture to fail")
-	}
-	if !strings.Contains(err.Error(), "bind mount") {
-		t.Fatalf("expected bind mount error after env_file normalization, got %v", err)
+	if err != nil {
+		t.Fatalf("expected bind mount to be skipped after env_file normalization, got error: %v", err)
 	}
 }
 
