@@ -13,6 +13,7 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 - [Supported Compose configuration](#supported-compose-configuration)
 - [Unsupported Compose configuration](#unsupported-compose-configuration)
 - [UDS Package CR generation](#uds-package-cr-generation)
+- [UDS Exemption generation](#uds-exemption-generation)
 - [Feedback](#feedback)
 
 ## Prerequisites
@@ -64,10 +65,11 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 | `healthcheck:` | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes. |
 | `deploy.resources` | `limits` and `reservations` map to Pod resource requests/limits. |
 | `ports:` | Published ports are auto-exposed via the UDS tenant gateway. `expose:` (internal-only) ports are not exposed externally. Compose port declaration order is preserved, and long-syntax `name` / `app_protocol` hints are used to prefer web ports for multi-port services. |
+| Bind mounts | Skipped during conversion with a warning because host paths do not have a portable Kubernetes equivalent. Use named `volumes:`, `configs:`, or `secrets:` for data that should be rendered into manifests. |
+| `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `manifests/uds-exemption.yaml`. |
 
 ## Unsupported Compose configuration
 
-- **Bind mounts** — use Compose `configs:`, `secrets:`, or named `volumes:` instead.
 - **External configs** — `configs:` must define inline `content:`; external file references are not supported.
 
 ## UDS Package CR generation
@@ -79,6 +81,7 @@ Most of the UDS Package CR is inferred from your Compose model. Reach for `x-uds
 - **Expose** — services with published `ports:` are exposed on the tenant gateway (`host` = service name, `gateway` = `tenant`, `selector`/`podLabels` = `app.kubernetes.io/name: <service>`). For multi-port services, the bridge prefers ports whose Compose `app_protocol` or `name` indicates web traffic (`http`, `https`, `http2`, `h2c`, `grpc`, `grpcs`, `web`, `www`), then falls back to the first declared published port. Ports are not filtered by port number or transport protocol.
 - **Network allow** — intra-namespace ingress/egress rules are always included so services in the namespace can communicate.
 - **SSO** — a Keycloak client is generated for the first exposed service (`clientId` = project name, `redirectUris` = `https://<host>.uds.dev/*`). Omitted when no services are exposed.
+- **Policy exemptions** — services that require UDS policy exceptions generate a `manifests/uds-exemption.yaml`, which is included in `zarf.yaml` with the rest of the rendered manifests.
 
 ### Opt-in
 
@@ -112,9 +115,61 @@ See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete wo
 ### Notes on specific keys
 
 - **Auto-expose port selection** — For services with multiple published ports, prefer Compose long syntax with `name` and/or `app_protocol` to identify the web-facing port, or use `x-uds.network.expose[].port` to pin the intended port if inference is ambiguous. The bridge does not automatically skip SSH, DNS, UDP, or other non-HTTP-looking ports.
+- **Bind mounts** — Bind mounts are treated as local-development-only inputs and are omitted from the rendered manifests with a warning. Conversion continues, which lets Compose files with dev container mounts still produce a deployable package. Use a named volume when the data should become a PVC, or a config/secret when the mounted content should be materialized in Kubernetes.
 - **`x-uds.sso`** — If omitted, the bridge infers an SSO client for the first exposed service. If explicitly set to an empty list (`x-uds.sso: []`), inferred SSO is disabled.
 - **`x-uds.monitor[]`** — Each entry may be a raw UDS `spec.monitor[]` item, or may use the bridge-only `service` key to infer labels and port metadata. For multi-port services, set either `portName` or `targetPort` so the bridge picks the intended metrics port.
 - **`x-uds.caBundle.configMap`** — Customizes the namespace trust-bundle ConfigMap created by UDS Core. The actual trust bundle contents are configured separately in UDS Core and are not part of the Package CR.
+
+## UDS Exemption generation
+
+When Compose security settings conflict with UDS secure-by-default policies, the bridge writes `manifests/uds-exemption.yaml` with an `Exemption` scoped to each matching service's namespace and pod name pattern. No exemption file is emitted when all services are compliant.
+
+| Compose input | Generated UDS policy exemption |
+|---|---|
+| `user: root`, `user: 0`, or equivalent UID/GID forms | `RequireNonRootUser` |
+| `privileged: true` | `DisallowPrivileged` |
+| `cap_add:` | `DropAllCapabilities`, `RestrictCapabilities` |
+| `security_opt: [seccomp:unconfined]` | `RestrictSeccomp` |
+| `cap_drop: [ALL]` | No exemption; rendered into the container `securityContext.capabilities.drop` instead. |
+
+Example:
+
+```yaml
+name: homelab
+services:
+  gitea:
+    image: docker.gitea.com/gitea:1.25.5
+    user: root
+  runner:
+    image: gitea/act_runner:latest
+    privileged: true
+```
+
+Produces exemption entries for the `gitea` and `runner` pods:
+
+```yaml
+apiVersion: uds.dev/v1alpha1
+kind: Exemption
+metadata:
+  name: homelab
+  namespace: uds-policy-exemptions
+spec:
+  exemptions:
+    - title: root user policy exemption for homelab gitea
+      matcher:
+        kind: pod
+        namespace: homelab
+        name: ^gitea-.*
+      policies:
+        - RequireNonRootUser
+    - title: privileged policy exemption for homelab runner
+      matcher:
+        kind: pod
+        namespace: homelab
+        name: ^runner-.*
+      policies:
+        - DisallowPrivileged
+```
 
 ## Feedback
 
