@@ -9,6 +9,7 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
+- [Local Dockerfile builds](#local-dockerfile-builds)
 - [How it works](#how-it-works)
 - [Supported Compose configuration](#supported-compose-configuration)
 - [Unsupported Compose configuration](#unsupported-compose-configuration)
@@ -47,6 +48,18 @@ zarf package create out/
 zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 
+## Local Dockerfile builds
+
+Docker Compose Bridge does not run the Compose build step. If a service uses `build:` with a local Dockerfile, build the Compose project before running the bridge conversion so the image tag exists locally:
+
+```sh
+cd examples/full
+docker compose build
+docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+```
+
+When `image:` is omitted, Compose assigns a default image name based on the project and service, such as `hello-world-server` for `examples/full`. To make the generated Kubernetes manifests and `zarf.yaml` use a stable or registry-backed reference, declare `image:` on the service before running `docker compose build`.
+
 ## How it works
 
 The bridge maps the [Compose Specification](https://compose-spec.io/) to Kubernetes resources (Deployments, Services, PVCs, ConfigMaps, Secrets) and synthesizes a [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/) for network policy, monitoring, SSO, and trust-bundle distribution. You can guide that synthesis with `x-uds` [extension keys](https://docs.docker.com/reference/compose-file/extension/) at the top level of your `compose.yaml`.
@@ -56,7 +69,7 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 | Compose key | Behavior |
 |---|---|
 | `image:` | Container image reference. |
-| `build:` | Build from a Dockerfile. Run `docker compose build` before conversion. |
+| `build:` | Build from a Dockerfile. Run `docker compose build` before `docker compose bridge convert`; the bridge conversion does not build images. |
 | Named `volumes:` | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default). |
 | `secrets:` | Converted to Kubernetes Secrets. |
 | `configs:` | Converted to ConfigMaps. Must use inline `content:` (no external file references). |
