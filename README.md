@@ -47,6 +47,8 @@ zarf package create out/
 zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 
+For a more complete walkthrough that exercises `build:`, `configs`, `secrets`, named volumes, and `x-uds` overrides, see [`examples/full/`](examples/full/).
+
 ## How it works
 
 The bridge maps the [Compose Specification](https://compose-spec.io/) to Kubernetes resources (Deployments, Services, PVCs, ConfigMaps, Secrets) and synthesizes a [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/) for network policy, monitoring, SSO, and trust-bundle distribution. You can guide that synthesis with `x-uds` [extension keys](https://docs.docker.com/reference/compose-file/extension/) at the top level of your `compose.yaml`.
@@ -110,7 +112,7 @@ x-uds:
         host: hello-world    # override host (default would be "server")
 ```
 
-See [`examples/full/compose.yaml`](examples/full/compose.yaml) for a complete working example.
+See [`examples/full/`](examples/full/) for a complete working example.
 
 ### Notes on specific keys
 
