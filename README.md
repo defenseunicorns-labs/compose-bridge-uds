@@ -31,7 +31,7 @@ This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys Wor
 **1. Stand up a local cluster with UDS Core Slim Dev** (skip if you already have one):
 
 ```sh
-uds deploy k3d-core-slim-dev
+uds deploy k3d-core-slim-dev:latest
 ```
 
 **2. Run the bridge transformation.** This writes Kubernetes manifests and a Zarf package definition to `out/`:
