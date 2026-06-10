@@ -149,12 +149,12 @@ configs:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	configMap := readFile(t, filepath.Join(outDir, "manifests", "configmap-app-config.yaml"))
+	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
 	if !strings.Contains(configMap, "key: value") {
 		t.Fatalf("expected configmap to contain rendered config content")
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"namespace: demo-ns",
 		"service: api",
@@ -169,17 +169,16 @@ configs:
 
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
 	for _, want := range []string{
-		"name: api",
+		"name: demo",
 		"namespace: demo-ns",
-		"manifests/uds-package.yaml",
-		"manifests/configmap-app-config.yaml",
+		"localPath: chart",
 	} {
 		if !strings.Contains(zarfConfig, want) {
-			t.Fatalf("expected zarf.yaml to contain %q", want)
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
 		}
 	}
-	if strings.Contains(zarfConfig, "localPath: chart") {
-		t.Fatalf("did not expect chart-based zarf config")
+	if strings.Contains(zarfConfig, "manifests:") {
+		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
 	}
 }
 
@@ -210,7 +209,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if !strings.Contains(udsPackage, "service: web") {
 		t.Fatalf("expected published web service to be auto-exposed")
 	}
@@ -240,7 +239,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	expose := firstExposeRule(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if got := expose["port"]; got != 3000 {
 		t.Fatalf("expected first declared published port 3000 to be auto-exposed, got %#v", got)
 	}
@@ -275,12 +274,12 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	expose := firstExposeRule(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if got := expose["port"]; got != 3000 {
 		t.Fatalf("expected app_protocol http port 3000 to be auto-exposed instead of SSH, got %#v", got)
 	}
 
-	service := readFile(t, filepath.Join(outDir, "manifests", "service-gitea.yaml"))
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-gitea.yaml"))
 	if !strings.Contains(service, "appProtocol: http") {
 		t.Fatalf("expected Service port to preserve app_protocol hint\n%s", service)
 	}
@@ -313,7 +312,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	expose := firstExposeRule(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if got := expose["port"]; got != 3000 {
 		t.Fatalf("expected web-named port 3000 to be auto-exposed instead of SSH, got %#v", got)
 	}
@@ -339,7 +338,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	expose := firstExposeRule(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if got := expose["port"]; got != 22 {
 		t.Fatalf("expected first declared published port 22 to remain eligible for auto-expose, got %#v", got)
 	}
@@ -365,12 +364,12 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	expose := firstExposeRule(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	expose := firstExposeRule(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if got := expose["port"]; got != 53 {
 		t.Fatalf("expected UDP port 53 to remain eligible for auto-expose, got %#v", got)
 	}
 
-	service := readFile(t, filepath.Join(outDir, "manifests", "service-dns.yaml"))
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-dns.yaml"))
 	if !strings.Contains(service, "protocol: UDP") {
 		t.Fatalf("expected Service port to preserve UDP protocol\n%s", service)
 	}
@@ -403,7 +402,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	service := readFile(t, filepath.Join(outDir, "manifests", "service-web.yaml"))
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-web.yaml"))
 	for _, want := range []string{
 		"name: web-ui",
 		"name: port-9090-tcp",
@@ -441,7 +440,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"service: web",
 		"host: web",
@@ -478,7 +477,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"clientId: myapp",
 		"name: Myapp",
@@ -521,7 +520,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if strings.Contains(udsPackage, "clientId:") {
 		t.Fatalf("did not expect SSO when x-uds.sso is explicitly empty\n%s", udsPackage)
 	}
@@ -564,7 +563,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if !strings.Contains(udsPackage, "clientId: custom-id") {
 		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
 	}
@@ -596,7 +595,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	if strings.Contains(udsPackage, "clientId") {
 		t.Fatalf("did not expect SSO when no services have published ports\n%s", udsPackage)
 	}
@@ -626,7 +625,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"monitor:",
 		"description: API metrics",
@@ -677,7 +676,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"kind: PodMonitor",
 		"path: /custom/metrics",
@@ -720,7 +719,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"targetPort: 9090",
 		"portName: port-9090-tcp",
@@ -761,7 +760,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readFile(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"selector:",
 		"podSelector:",
@@ -894,7 +893,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "manifests", "uds-package.yaml"))
+	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	caBundle := mustMap(t, spec["caBundle"])
 	configMap := mustMap(t, caBundle["configMap"])
@@ -1018,7 +1017,7 @@ func TestExemptionForRootUser(t *testing.T) {
 				t.Fatalf("WritePackage() error = %v", err)
 			}
 
-			exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+			exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 			for _, want := range []string{
 				"kind: Exemption",
 				"namespace: uds-policy-exemptions",
@@ -1055,7 +1054,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 	for _, want := range []string{
 		"kind: Exemption",
 		"namespace: uds-policy-exemptions",
@@ -1092,7 +1091,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 	for _, want := range []string{
 		"DropAllCapabilities",
 		"RestrictCapabilities",
@@ -1124,7 +1123,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 	if !strings.Contains(exemption, "RestrictSeccomp") {
 		t.Fatalf("expected RestrictSeccomp in exemption\n%s", exemption)
 	}
@@ -1149,7 +1148,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(outDir, "manifests", "uds-exemption.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("expected uds-exemption.yaml to be absent for a secure service, stat err = %v", err)
 	}
 }
@@ -1174,7 +1173,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(outDir, "manifests", "uds-exemption.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("expected uds-exemption.yaml to be absent for cap_drop-only service, stat err = %v", err)
 	}
 }
@@ -1206,7 +1205,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	exemption := readFile(t, filepath.Join(outDir, "manifests", "uds-exemption.yaml"))
+	exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 	for _, want := range []string{
 		"RequireNonRootUser",
 		"^gitea-.*",
@@ -1221,9 +1220,11 @@ services:
 		}
 	}
 
+	// The exemption is rendered as a chart template (not a path-referenced
+	// manifest), so the Zarf package references the generated chart instead.
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
-	if !strings.Contains(zarfConfig, "manifests/uds-exemption.yaml") {
-		t.Fatalf("expected zarf.yaml to reference uds-exemption.yaml\n%s", zarfConfig)
+	if !strings.Contains(zarfConfig, "localPath: chart") {
+		t.Fatalf("expected zarf.yaml to reference the generated chart\n%s", zarfConfig)
 	}
 }
 
@@ -1247,7 +1248,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	deployment := readFile(t, filepath.Join(outDir, "manifests", "deployment-api.yaml"))
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
 	for _, want := range []string{
 		"capabilities:",
 		"drop:",
@@ -1257,6 +1258,125 @@ services:
 			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
 		}
 	}
+}
+
+func TestWritePackageGeneratesHelmChart(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartMeta := readFile(t, filepath.Join(outDir, "chart", "Chart.yaml"))
+	for _, want := range []string{
+		"apiVersion: v2",
+		"name: shop",
+		"version: 0.1.0",
+	} {
+		if !strings.Contains(chartMeta, want) {
+			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
+		}
+	}
+
+	// Resources are rendered as chart templates, not raw manifests.
+	for _, rel := range []string{"namespace.yaml", "deployment-api.yaml", "service-api.yaml", "uds-package.yaml"} {
+		if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", rel)); err != nil {
+			t.Fatalf("expected chart template %s: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "manifests")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect legacy manifests/ directory")
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"charts:",
+		"localPath: chart",
+		"name: shop",
+		"version: 0.1.0",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "manifests:") {
+		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
+	}
+	// No secrets: no Zarf values file and no valuesFiles reference.
+	if _, err := os.Stat(filepath.Join(outDir, "values")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect values/ directory for a package without secrets")
+	}
+	if strings.Contains(zarfConfig, "valuesFiles") {
+		t.Fatalf("did not expect valuesFiles for a package without secrets\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageSecretFlowsThroughChartValues(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    secrets:
+      - api_key
+secrets:
+  api_key:
+    file: ./api_key.txt
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	// The Secret template reads from chart values, not a static literal.
+	secret := readFile(t, filepath.Join(outDir, "chart", "templates", "secret-api-key.yaml"))
+	if !strings.Contains(secret, "{{ .Values.secrets.API_KEY | quote }}") {
+		t.Fatalf("expected secret template to read from chart values\n%s", secret)
+	}
+	if strings.Contains(secret, "###ZARF_VAR_") {
+		t.Fatalf("did not expect Zarf placeholder inside chart template\n%s", secret)
+	}
+
+	// The Zarf variable placeholder lives in the Zarf-templated values file.
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "API_KEY: '###ZARF_VAR_API_KEY###'") {
+		t.Fatalf("expected values.yaml to carry the variable placeholder\n%s", zarfValues)
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"valuesFiles:",
+		"values/values.yaml",
+		"name: API_KEY",
+		"sensitive: true",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+}
 
 func firstExposeRule(t *testing.T, path string) map[string]any {
 	t.Helper()

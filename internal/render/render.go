@@ -16,17 +16,23 @@ import (
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
-type composeComponentSpec struct {
-	Name          string
-	Namespace     string
-	ManifestFiles []string
-	Images        []string
-	DependsOn     []string
-}
+const (
+	// chartDirName is the Helm chart directory written under the package root.
+	chartDirName = "chart"
+	// zarfValuesRel is the Zarf-templated values file (relative to the package
+	// root) referenced by the component's chart valuesFiles. Only written when
+	// the package has secrets.
+	zarfValuesRel = "values/values.yaml"
+	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
+	// stringData and then replaced with a Helm value reference, so the Secret can
+	// be rendered by Helm from chart values rather than a static literal.
+	secretValuePlaceholder = "__HELM_SECRET_VALUE__"
+)
 
 func WritePackage(root string, app model.App) error {
-	manifestDir := filepath.Join(root, "manifests")
-	for _, dir := range []string{root, manifestDir} {
+	chartDir := filepath.Join(root, chartDirName)
+	templatesDir := filepath.Join(chartDir, "templates")
+	for _, dir := range []string{root, chartDir, templatesDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -40,8 +46,7 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	namespaceRel := filepath.ToSlash(filepath.Join("manifests", "namespace.yaml"))
-	if err := writeYAMLFile(filepath.Join(manifestDir, "namespace.yaml"), namespaceManifest{
+	if err := writeYAMLFile(filepath.Join(templatesDir, "namespace.yaml"), namespaceManifest{
 		APIVersion: "v1",
 		Kind:       "Namespace",
 		Metadata: objectMeta{
@@ -54,14 +59,12 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
-	pvcManifestByName := map[string]string{}
 	for _, name := range sortedVolumeNames(app.Volumes) {
 		volume := app.Volumes[name]
 		if volume.External {
 			continue
 		}
-		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("pvc-%s.yaml", volume.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("pvc-%s.yaml", volume.Name)), persistentVolumeClaimManifest{
+		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("pvc-%s.yaml", volume.Name)), persistentVolumeClaimManifest{
 			APIVersion: "v1",
 			Kind:       "PersistentVolumeClaim",
 			Metadata: objectMeta{
@@ -76,17 +79,14 @@ func WritePackage(root string, app model.App) error {
 		}); err != nil {
 			return err
 		}
-		pvcManifestByName[name] = relPath
 	}
 
-	configManifestByName := map[string]string{}
 	for _, name := range sortedConfigNames(app.Configs) {
 		config := app.Configs[name]
 		if config.External {
 			continue
 		}
-		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("configmap-%s.yaml", config.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
+		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
 			APIVersion: "v1",
 			Kind:       "ConfigMap",
 			Metadata: objectMeta{
@@ -98,118 +98,135 @@ func WritePackage(root string, app model.App) error {
 		}); err != nil {
 			return err
 		}
-		configManifestByName[name] = relPath
 	}
 
-	secretManifestByName := map[string]string{}
+	// Secrets are rendered by Helm from chart values so Zarf can substitute the
+	// sensitive value into the values file at deploy time (Zarf only templates
+	// chart valuesFiles, not arbitrary template files). secretValueKeys tracks the
+	// values keys used so the chart defaults and the Zarf values file stay in sync.
+	secretValueKeys := make([]string, 0, len(app.Secrets))
 	for _, name := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[name]
 		if secret.External {
 			continue
 		}
 		variableName := secretVariables[secret.Name]
-		relPath := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("secret-%s.yaml", secret.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("secret-%s.yaml", secret.Name)), secretManifest{
-			APIVersion: "v1",
-			Kind:       "Secret",
-			Metadata: objectMeta{
-				Name:      secret.Name,
-				Namespace: app.Package.Namespace,
-				Labels:    appLabels(app.Package.Name, secret.Name),
-			},
-			Type:       "Opaque",
-			StringData: map[string]string{secret.Name: fmt.Sprintf("###ZARF_VAR_%s###", variableName)},
-		}); err != nil {
+		if err := writeSecretTemplate(filepath.Join(templatesDir, fmt.Sprintf("secret-%s.yaml", secret.Name)), app, secret, variableName); err != nil {
 			return err
 		}
-		secretManifestByName[name] = relPath
+		secretValueKeys = append(secretValueKeys, variableName)
 	}
 
-	components := make([]composeComponentSpec, 0, len(app.Services))
 	for _, svc := range app.Services {
-		manifestFiles := []string{namespaceRel}
-
-		for _, mount := range svc.Volumes {
-			if relPath, ok := pvcManifestByName[mount.Name]; ok {
-				manifestFiles = append(manifestFiles, relPath)
-			}
-		}
-		for _, ref := range svc.Secrets {
-			if relPath, ok := secretManifestByName[ref.Source]; ok {
-				manifestFiles = append(manifestFiles, relPath)
-			}
-		}
-		for _, ref := range svc.Configs {
-			if relPath, ok := configManifestByName[ref.Source]; ok {
-				manifestFiles = append(manifestFiles, relPath)
-			}
-		}
-
 		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts)
 		if err != nil {
 			return err
 		}
-		deploymentRel := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("deployment-%s.yaml", svc.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment); err != nil {
+		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment); err != nil {
 			return err
 		}
-		manifestFiles = append(manifestFiles, deploymentRel)
-
-		serviceRel := filepath.ToSlash(filepath.Join("manifests", fmt.Sprintf("service-%s.yaml", svc.Name)))
-		if err := writeYAMLFile(filepath.Join(manifestDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc)); err != nil {
+		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc)); err != nil {
 			return err
 		}
-		manifestFiles = append(manifestFiles, serviceRel)
-
-		component := composeComponentSpec{
-			Name:          svc.Name,
-			Namespace:     app.Package.Namespace,
-			ManifestFiles: dedupeStrings(manifestFiles),
-			Images:        buildComponentImages(svc, servicePorts),
-			DependsOn:     buildComponentDependsOn(svc),
-		}
-		components = append(components, component)
 	}
 
-	ordered, err := orderComposeComponents(components)
-	if err != nil {
-		return err
-	}
-
-	packageRel := filepath.ToSlash(filepath.Join("manifests", "uds-package.yaml"))
 	udsPackage, err := buildUDSPackage(app)
 	if err != nil {
 		return err
 	}
-	if err := writeYAMLFile(filepath.Join(manifestDir, "uds-package.yaml"), udsPackage); err != nil {
+	if err := writeYAMLFile(filepath.Join(templatesDir, "uds-package.yaml"), udsPackage); err != nil {
 		return err
-	}
-	if len(ordered) > 0 {
-		last := len(ordered) - 1
-		ordered[last].ManifestFiles = dedupeStrings(append(ordered[last].ManifestFiles, packageRel))
 	}
 
 	if exemption := buildUDSExemption(app); exemption != nil {
-		exemptionRel := filepath.ToSlash(filepath.Join("manifests", "uds-exemption.yaml"))
-		if err := writeYAMLFile(filepath.Join(manifestDir, "uds-exemption.yaml"), exemption); err != nil {
+		if err := writeYAMLFile(filepath.Join(templatesDir, "uds-exemption.yaml"), exemption); err != nil {
 			return err
-		}
-		if len(ordered) > 0 {
-			last := len(ordered) - 1
-			ordered[last].ManifestFiles = dedupeStrings(append(ordered[last].ManifestFiles, exemptionRel))
 		}
 	}
 
-	dedupeSharedManifests(ordered)
+	if err := writeChartMetadata(filepath.Join(chartDir, "Chart.yaml"), app); err != nil {
+		return err
+	}
+	if err := writeChartValues(filepath.Join(chartDir, "values.yaml"), secretValueKeys, false); err != nil {
+		return err
+	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, ordered); err != nil {
+	hasSecrets := len(secretValueKeys) > 0
+	if hasSecrets {
+		valuesPath := filepath.Join(root, filepath.FromSlash(zarfValuesRel))
+		if err := os.MkdirAll(filepath.Dir(valuesPath), 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", filepath.Dir(valuesPath), err)
+		}
+		if err := writeChartValues(valuesPath, secretValueKeys, true); err != nil {
+			return err
+		}
+	}
+
+	images := make([]string, 0, len(app.Services))
+	for _, svc := range app.Services {
+		images = append(images, buildComponentImages(svc, servicePorts)...)
+	}
+
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, dedupeStrings(images), hasSecrets); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func writeZarfConfig(path string, app model.App, secretVariables map[string]string, components []composeComponentSpec) error {
+// writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
+// chart values (.Values.secrets.<variableName>) rather than a static literal, so
+// Zarf can inject the sensitive value via the chart values file at deploy time.
+func writeSecretTemplate(path string, app model.App, secret model.Secret, variableName string) error {
+	data, err := yamlv3.Marshal(secretManifest{
+		APIVersion: "v1",
+		Kind:       "Secret",
+		Metadata: objectMeta{
+			Name:      secret.Name,
+			Namespace: app.Package.Namespace,
+			Labels:    appLabels(app.Package.Name, secret.Name),
+		},
+		Type:       "Opaque",
+		StringData: map[string]string{secret.Name: secretValuePlaceholder},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+	rendered := strings.ReplaceAll(string(data), secretValuePlaceholder,
+		fmt.Sprintf("{{ .Values.secrets.%s | quote }}", variableName))
+	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeChartMetadata writes the generated chart's Chart.yaml.
+func writeChartMetadata(path string, app model.App) error {
+	return writeYAMLFile(path, chartMetadata{
+		APIVersion:  "v2",
+		Name:        app.Package.Name,
+		Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
+		Type:        "application",
+		Version:     app.Package.Version,
+		AppVersion:  app.Package.Version,
+	})
+}
+
+// writeChartValues writes a values document mapping each secret values key to a
+// default (empty) value, or to a Zarf variable placeholder when placeholder is set.
+func writeChartValues(path string, secretKeys []string, placeholder bool) error {
+	secrets := map[string]string{}
+	for _, key := range secretKeys {
+		if placeholder {
+			secrets[key] = fmt.Sprintf("###ZARF_VAR_%s###", key)
+		} else {
+			secrets[key] = ""
+		}
+	}
+	return writeYAMLFile(path, chartValues{Secrets: secrets})
+}
+
+func writeZarfConfig(path string, app model.App, secretVariables map[string]string, images []string, hasSecrets bool) error {
 	variables := []zarfVariable{}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variables = append(variables, zarfVariable{
@@ -231,21 +248,22 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 		Variables: variables,
 	}
 
-	for _, component := range components {
-		pkg.Components = append(pkg.Components, zarfComponent{
-			Name:        component.Name,
-			Required:    true,
-			Description: fmt.Sprintf("Deploy %s", component.Name),
-			Manifests: []zarfManifest{
-				{
-					Name:      component.Name + "-manifests",
-					Namespace: component.Namespace,
-					Files:     component.ManifestFiles,
-				},
-			},
-			Images: dedupeStrings(component.Images),
-		})
+	chart := zarfChart{
+		Name:      app.Package.Name,
+		Namespace: app.Package.Namespace,
+		LocalPath: chartDirName,
+		Version:   app.Package.Version,
 	}
+	if hasSecrets {
+		chart.ValuesFiles = []string{zarfValuesRel}
+	}
+	pkg.Components = append(pkg.Components, zarfComponent{
+		Name:        app.Package.Name,
+		Required:    true,
+		Description: fmt.Sprintf("Deploy %s", app.Package.Name),
+		Charts:      []zarfChart{chart},
+		Images:      dedupeStrings(images),
+	})
 
 	data, err := yamlv3.Marshal(pkg)
 	if err != nil {
@@ -852,14 +870,6 @@ func buildComponentImages(svc model.Service, servicePorts map[string]int) []stri
 	return dedupeStrings(images)
 }
 
-func buildComponentDependsOn(svc model.Service) []string {
-	dependsOn := make([]string, 0, len(svc.DependsOn))
-	for _, dep := range svc.DependsOn {
-		dependsOn = append(dependsOn, dep.Service)
-	}
-	return dedupeStrings(dependsOn)
-}
-
 func buildEnv(env []model.EnvVar) []envVar {
 	if len(env) == 0 {
 		return nil
@@ -1173,81 +1183,6 @@ func writeYAMLFile(path string, value any) error {
 	return nil
 }
 
-func dedupeSharedManifests(components []composeComponentSpec) {
-	claimed := map[string]struct{}{}
-	for i := range components {
-		unique := make([]string, 0, len(components[i].ManifestFiles))
-		for _, file := range components[i].ManifestFiles {
-			base := filepath.Base(file)
-			isShared := strings.HasPrefix(base, "secret-") || strings.HasPrefix(base, "configmap-") || strings.HasPrefix(base, "pvc-")
-			if isShared {
-				if _, exists := claimed[file]; exists {
-					continue
-				}
-				claimed[file] = struct{}{}
-			}
-			unique = append(unique, file)
-		}
-		components[i].ManifestFiles = unique
-	}
-}
-
-func orderComposeComponents(components []composeComponentSpec) ([]composeComponentSpec, error) {
-	if len(components) <= 1 {
-		return components, nil
-	}
-
-	componentByName := map[string]composeComponentSpec{}
-	indegree := map[string]int{}
-	dependents := map[string][]string{}
-	names := make([]string, 0, len(components))
-	for _, component := range components {
-		componentByName[component.Name] = component
-		indegree[component.Name] = 0
-		names = append(names, component.Name)
-	}
-
-	for _, component := range components {
-		for _, dep := range component.DependsOn {
-			if _, exists := componentByName[dep]; !exists {
-				continue
-			}
-			indegree[component.Name]++
-			dependents[dep] = append(dependents[dep], component.Name)
-		}
-	}
-
-	sort.Strings(names)
-	queue := make([]string, 0, len(names))
-	for _, name := range names {
-		if indegree[name] == 0 {
-			queue = append(queue, name)
-		}
-	}
-
-	ordered := make([]composeComponentSpec, 0, len(components))
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		ordered = append(ordered, componentByName[current])
-
-		next := append([]string(nil), dependents[current]...)
-		sort.Strings(next)
-		for _, dependent := range next {
-			indegree[dependent]--
-			if indegree[dependent] == 0 {
-				queue = append(queue, dependent)
-			}
-		}
-	}
-
-	if len(ordered) != len(components) {
-		return nil, fmt.Errorf("compose depends_on graph contains a cycle; unable to determine deterministic component order")
-	}
-
-	return ordered, nil
-}
-
 func sortedVolumeNames(volumes map[string]model.Volume) []string {
 	keys := make([]string, 0, len(volumes))
 	for key := range volumes {
@@ -1434,10 +1369,10 @@ type resourceRequirements struct {
 }
 
 type securityContext struct {
-	RunAsNonRoot *bool              `yaml:"runAsNonRoot,omitempty"`
-	RunAsUser    *int64             `yaml:"runAsUser,omitempty"`
-	Privileged   *bool              `yaml:"privileged,omitempty"`
-	Capabilities *capabilitiesSpec  `yaml:"capabilities,omitempty"`
+	RunAsNonRoot *bool             `yaml:"runAsNonRoot,omitempty"`
+	RunAsUser    *int64            `yaml:"runAsUser,omitempty"`
+	Privileged   *bool             `yaml:"privileged,omitempty"`
+	Capabilities *capabilitiesSpec `yaml:"capabilities,omitempty"`
 }
 
 type capabilitiesSpec struct {
@@ -1446,10 +1381,10 @@ type capabilitiesSpec struct {
 }
 
 type udsExemptionManifest struct {
-	APIVersion string             `yaml:"apiVersion"`
-	Kind       string             `yaml:"kind"`
-	Metadata   objectMeta         `yaml:"metadata"`
-	Spec       udsExemptionSpec   `yaml:"spec"`
+	APIVersion string           `yaml:"apiVersion"`
+	Kind       string           `yaml:"kind"`
+	Metadata   objectMeta       `yaml:"metadata"`
+	Spec       udsExemptionSpec `yaml:"spec"`
 }
 
 type udsExemptionSpec struct {
@@ -1457,9 +1392,9 @@ type udsExemptionSpec struct {
 }
 
 type udsExemptionEntry struct {
-	Title    string               `yaml:"title"`
-	Matcher  udsExemptionMatcher  `yaml:"matcher"`
-	Policies []string             `yaml:"policies"`
+	Title    string              `yaml:"title"`
+	Matcher  udsExemptionMatcher `yaml:"matcher"`
+	Policies []string            `yaml:"policies"`
 }
 
 type udsExemptionMatcher struct {
@@ -1561,15 +1496,33 @@ type zarfVariable struct {
 }
 
 type zarfComponent struct {
-	Name        string         `yaml:"name"`
-	Required    bool           `yaml:"required"`
-	Description string         `yaml:"description,omitempty"`
-	Manifests   []zarfManifest `yaml:"manifests,omitempty"`
-	Images      []string       `yaml:"images,omitempty"`
+	Name        string      `yaml:"name"`
+	Required    bool        `yaml:"required"`
+	Description string      `yaml:"description,omitempty"`
+	Charts      []zarfChart `yaml:"charts,omitempty"`
+	Images      []string    `yaml:"images,omitempty"`
 }
 
-type zarfManifest struct {
-	Name      string   `yaml:"name"`
-	Namespace string   `yaml:"namespace,omitempty"`
-	Files     []string `yaml:"files,omitempty"`
+type zarfChart struct {
+	Name        string   `yaml:"name"`
+	Namespace   string   `yaml:"namespace"`
+	LocalPath   string   `yaml:"localPath"`
+	Version     string   `yaml:"version"`
+	ValuesFiles []string `yaml:"valuesFiles,omitempty"`
+}
+
+// chartMetadata is the Chart.yaml written for the generated Helm chart.
+type chartMetadata struct {
+	APIVersion  string `yaml:"apiVersion"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	Type        string `yaml:"type,omitempty"`
+	Version     string `yaml:"version"`
+	AppVersion  string `yaml:"appVersion,omitempty"`
+}
+
+// chartValues is the values document written for both the chart defaults
+// (chart/values.yaml) and the Zarf-templated overrides (values/values.yaml).
+type chartValues struct {
+	Secrets map[string]string `yaml:"secrets"`
 }
