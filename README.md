@@ -44,8 +44,8 @@ docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 **3. Build and deploy the Zarf package:**
 
 ```sh
-zarf package create out/
-zarf package deploy zarf-package-wordpress-*.tar.zst
+cd out
+uds run dev
 ```
 
 ## Local Dockerfile builds
@@ -108,7 +108,7 @@ Most of the UDS Package CR is inferred from your Compose model. Reach for `x-uds
 |---|---|
 | `x-uds.package.name` | Package name (default: Compose project name). |
 | `x-uds.package.namespace` | Kubernetes namespace (default: Compose project name). |
-| `x-uds.package.version` | Package version (default: `0.1.0`). |
+| `x-uds.package.version` | Package version (default: `dev`). |
 | `x-uds.network.expose[]` | Override expose rules — replaces auto-generation when present. Missing fields (`gateway`, `port`, `selector`, `podLabels`) are inferred from the service. |
 | `x-uds.network.allow[]` | Additional network allow rules — merged with (and deduplicated against) auto-generated rules. |
 | `x-uds.monitor[]` | Monitor rules for Prometheus scraping. When `service` is set, missing `selector`, `podSelector`, `portName`, `targetPort`, `path`, and `kind` are inferred from the Compose service. |

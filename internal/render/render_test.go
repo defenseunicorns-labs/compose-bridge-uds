@@ -1288,6 +1288,7 @@ services:
 		"apiVersion: v2",
 		"name: shop",
 		"version: 0.1.0",
+		"appVersion: dev",
 	} {
 		if !strings.Contains(chartMeta, want) {
 			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
@@ -1309,7 +1310,7 @@ services:
 		"charts:",
 		"localPath: chart",
 		"name: shop",
-		"version: 0.1.0",
+		"version: dev",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
@@ -1416,4 +1417,68 @@ func mustMap(t *testing.T, value any) map[string]any {
 		t.Fatalf("expected map[string]any, got %T", value)
 	}
 	return m
+}
+
+func TestWritePackageGeneratesBundle(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	bundleData, err := os.ReadFile(filepath.Join(outDir, "bundle", "uds-bundle.yaml"))
+	if err != nil {
+		t.Fatalf("bundle/uds-bundle.yaml not written: %v", err)
+	}
+	if !strings.Contains(string(bundleData), "demo") {
+		t.Fatal("uds-bundle.yaml missing package name")
+	}
+	if !strings.Contains(string(bundleData), "UDSBundle") {
+		t.Fatal("uds-bundle.yaml missing kind")
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "bundle", "uds-config.yaml")); err != nil {
+		t.Fatalf("bundle/uds-config.yaml not written: %v", err)
+	}
+}
+
+func TestWritePackageGeneratesTasksYAML(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, "tasks.yaml"))
+	if err != nil {
+		t.Fatalf("tasks.yaml not written: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("tasks.yaml is empty")
+	}
+	if !strings.Contains(string(data), "uds-common") {
+		t.Fatal("tasks.yaml missing uds-common includes")
+	}
 }
