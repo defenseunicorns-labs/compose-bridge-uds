@@ -17,7 +17,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^internal/render/templates/tasks\\.yaml$"],
+      "fileMatch": ["^examples/.+/tasks\\.yaml$"],
       "matchStrings": [
         "uds-common/(?<currentValue>v[\\d.]+)/tasks/"
       ],

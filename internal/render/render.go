@@ -1,7 +1,6 @@
 package render
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,9 +13,6 @@ import (
 
 	"defenseunicorns/uds-compose-bridge/internal/model"
 )
-
-//go:embed templates/tasks.yaml
-var tasksTemplate []byte
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
@@ -175,58 +171,6 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
-	if err := writeTasks(root); err != nil {
-		return err
-	}
-
-	if err := writeBundle(root, app); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func writeTasks(root string) error {
-	path := filepath.Join(root, "tasks.yaml")
-	if err := os.WriteFile(path, tasksTemplate, 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
-	}
-	return nil
-}
-
-func writeBundle(root string, app model.App) error {
-	bundleDir := filepath.Join(root, "bundle")
-	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
-		return fmt.Errorf("create directory %s: %w", bundleDir, err)
-	}
-
-	bundle := udsBundleConfig{
-		Kind: "UDSBundle",
-		Metadata: udsBundleMetadata{
-			Name:        app.Package.Name + "-test",
-			Description: fmt.Sprintf("A UDS bundle for deploying %s on a development cluster", app.Package.Name),
-			Version:     "dev",
-		},
-		Packages: []udsBundlePackage{
-			{
-				Name: app.Package.Name,
-				Path: "../",
-				Ref:  app.Package.Version,
-			},
-		},
-	}
-
-	data, err := yamlv3.Marshal(bundle)
-	if err != nil {
-		return fmt.Errorf("marshal uds bundle: %w", err)
-	}
-	const licenseHeader = "# Copyright 2024 Defense Unicorns\n# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial\n\n"
-	if err := os.WriteFile(filepath.Join(bundleDir, "uds-bundle.yaml"), append([]byte(licenseHeader), data...), 0o644); err != nil {
-		return fmt.Errorf("write file bundle/uds-bundle.yaml: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(bundleDir, "uds-config.yaml"), []byte(licenseHeader), 0o644); err != nil {
-		return fmt.Errorf("write file bundle/uds-config.yaml: %w", err)
-	}
 	return nil
 }
 
@@ -1595,20 +1539,3 @@ type chartValues struct {
 	Secrets map[string]string `yaml:"secrets"`
 }
 
-type udsBundleConfig struct {
-	Kind     string             `yaml:"kind"`
-	Metadata udsBundleMetadata  `yaml:"metadata"`
-	Packages []udsBundlePackage `yaml:"packages"`
-}
-
-type udsBundleMetadata struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Version     string `yaml:"version"`
-}
-
-type udsBundlePackage struct {
-	Name string `yaml:"name"`
-	Path string `yaml:"path"`
-	Ref  string `yaml:"ref"`
-}
