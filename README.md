@@ -34,17 +34,19 @@ This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys Wor
 uds deploy k3d-core-slim-dev:latest
 ```
 
-**2. Run the bridge transformation.** This writes a Helm chart to `out/chart/` and a Zarf package definition to `out/zarf.yaml` (plus `out/values/` when the Compose file declares secrets):
+**1. Run the bridge transformation.** This writes a Helm chart to `out/chart/` and a Zarf package definition to `out/zarf.yaml` (plus `out/values/` when the Compose file declares secrets):
 
 ```sh
 cd examples/simple
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 ```
 
-**3. Build and deploy the Zarf package:**
+**2. Build and deploy the Zarf package:**
 
 ```sh
 cd out
+
+# Note that this command will stand up a local cluster with UDS Core Slim Dev and deploy the package.
 uds run
 ```
 
