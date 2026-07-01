@@ -13,5 +13,17 @@
       "matchManagers": ["gomod"],
       "groupName": "Go dependencies"
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^examples/.+/tasks\\.yaml$"],
+      "matchStrings": [
+        "uds-common/(?<currentValue>v[\\d.]+)/tasks/"
+      ],
+      "depNameTemplate": "defenseunicorns/uds-common",
+      "datasourceTemplate": "github-tags",
+      "versioning": "semver"
+    }
   ]
 }
