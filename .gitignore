@@ -37,3 +37,6 @@ examples/**/out/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst
+
+# Any uds bundles
+**/uds-bundle-*.tar.zst

@@ -26,13 +26,7 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 
 ## Quickstart
 
-This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys WordPress + MySQL from a Compose file.
-
-**1. Stand up a local cluster with UDS Core Slim Dev** (skip if you already have one):
-
-```sh
-uds deploy k3d-core-slim-dev:latest
-```
+This walkthrough packages and deploys WordPress + MySQL from a Compose file onto a local k3d cluster running UDS Core Slim Dev.
 
 **1. Run the bridge transformation.** This writes a Helm chart to `out/chart/` and a Zarf package definition to `out/zarf.yaml` (plus `out/values/` when the Compose file declares secrets):
 
@@ -41,14 +35,15 @@ cd examples/simple
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 ```
 
-**2. Build and deploy the Zarf package:**
+**2. Build and deploy:**
 
 ```sh
-cd out
-
-# Note that this command will stand up a local cluster with UDS Core Slim Dev and deploy the package.
 uds run
 ```
+
+`uds run` executes the `default` task in `tasks.yaml`. It creates a k3d cluster, deploys UDS Core Slim Dev, builds the Zarf package from `out/`, and deploys it. Run this from the same directory as `tasks.yaml` (`examples/simple/` in this case).
+
+The included `tasks.yaml` is a starting point that follows [uds-common](https://github.com/defenseunicorns/uds-common) task conventions. Adapt it to your own CI or deployment workflow as needed.
 
 ## Local Dockerfile builds
 

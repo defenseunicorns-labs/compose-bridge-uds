@@ -24,6 +24,7 @@ tasks:
     actions:
       - task: create:package
         with:
+          path: out
           options: "--skip-sbom"
 
   - name: create-deploy-test-bundle
@@ -64,6 +65,8 @@ tasks:
     actions:
       - description: Create the package
         task: create:package
+        with:
+          path: out
 
       - description: Setup the cluster
         task: setup:k3d-test-cluster
