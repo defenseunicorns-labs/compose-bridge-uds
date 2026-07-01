@@ -45,7 +45,7 @@ docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 
 ```sh
 cd out
-uds run dev
+uds run
 ```
 
 ## Local Dockerfile builds
