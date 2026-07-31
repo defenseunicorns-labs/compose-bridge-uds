@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultVersion      = "dev"
+	DefaultVersion      = "0.1.0"
 	DependencyInitImage = "busybox:1.36"
 )
 
@@ -106,25 +106,25 @@ type Package struct {
 }
 
 type Service struct {
-	Name        string
-	Image       string
-	UsesBuild   bool
-	Ports       []Port
-	Env         []EnvVar
-	User        string
-	Privileged  bool
-	CapAdd      []string
-	CapDrop     []string
+	Name         string
+	Image        string
+	UsesBuild    bool
+	Ports        []Port
+	Env          []EnvVar
+	User         string
+	Privileged   bool
+	CapAdd       []string
+	CapDrop      []string
 	SecurityOpts []string
-	Command     []string
-	Args        []string
-	Healthcheck *Healthcheck
-	Volumes     []VolumeMount
-	Secrets     []FileRef
-	Configs     []FileRef
-	DependsOn   []Dependency
-	Resources   Resources
-	Profiles    []string
+	Command      []string
+	Args         []string
+	Healthcheck  *Healthcheck
+	Volumes      []VolumeMount
+	Secrets      []FileRef
+	Configs      []FileRef
+	DependsOn    []Dependency
+	Resources    Resources
+	Profiles     []string
 }
 
 type App struct {

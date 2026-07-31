@@ -1288,7 +1288,6 @@ services:
 		"apiVersion: v2",
 		"name: shop",
 		"version: 0.1.0",
-		"appVersion: dev",
 	} {
 		if !strings.Contains(chartMeta, want) {
 			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
@@ -1310,7 +1309,7 @@ services:
 		"charts:",
 		"localPath: chart",
 		"name: shop",
-		"version: dev",
+		"version: 0.1.0",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)

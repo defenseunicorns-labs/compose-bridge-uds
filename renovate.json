@@ -17,13 +17,13 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^examples/.+/tasks\\.yaml$"],
+      "description": "Update OCI package tags in the README",
+      "managerFilePatterns": ["/^README\\.md$/"],
       "matchStrings": [
-        "uds-common/(?<currentValue>v[\\d.]+)/tasks/"
+        "uds zarf package deploy oci://(?<depName>ghcr\\.io/[^:]+):(?<currentValue>[^\\s]+)"
       ],
-      "depNameTemplate": "defenseunicorns/uds-common",
-      "datasourceTemplate": "github-tags",
-      "versioning": "semver"
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ]
 }
