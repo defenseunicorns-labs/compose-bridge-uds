@@ -26,24 +26,27 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 
 ## Quickstart
 
-This walkthrough packages and deploys WordPress + MySQL from a Compose file onto a local k3d cluster running UDS Core Slim Dev.
+This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys WordPress + MySQL from a Compose file.
 
-**1. Run the bridge transformation.** This writes a Helm chart to `out/chart/` and a Zarf package definition to `out/zarf.yaml` (plus `out/values/` when the Compose file declares secrets):
+**1. Stand up a local cluster with UDS Core Slim Dev** (skip if you already have one):
+
+```sh
+uds deploy k3d-core-slim-dev:latest
+```
+
+**2. Run the bridge transformation.** This writes a Helm chart to `out/chart/` and a Zarf package definition to `out/zarf.yaml` (plus `out/values/` when the Compose file declares secrets):
 
 ```sh
 cd examples/simple
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 ```
 
-**2. Build and deploy:**
+**3. Build and deploy the Zarf package:**
 
 ```sh
-uds run
+zarf package create out/
+zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
-
-`uds run` executes the `default` task in `tasks.yaml`. It creates a k3d cluster, deploys UDS Core Slim Dev, builds the Zarf package from `out/`, and deploys it. Run this from the same directory as `tasks.yaml` (`examples/simple/` in this case).
-
-The included `tasks.yaml` is a starting point that follows [uds-common](https://github.com/defenseunicorns/uds-common) task conventions. Adapt it to your own CI or deployment workflow as needed.
 
 ## Local Dockerfile builds
 
@@ -105,7 +108,7 @@ Most of the UDS Package CR is inferred from your Compose model. Reach for `x-uds
 |---|---|
 | `x-uds.package.name` | Package name (default: Compose project name). |
 | `x-uds.package.namespace` | Kubernetes namespace (default: Compose project name). |
-| `x-uds.package.version` | Package version (default: `dev`). |
+| `x-uds.package.version` | Package version (default: `0.1.0`). |
 | `x-uds.network.expose[]` | Override expose rules — replaces auto-generation when present. Missing fields (`gateway`, `port`, `selector`, `podLabels`) are inferred from the service. |
 | `x-uds.network.allow[]` | Additional network allow rules — merged with (and deduplicated against) auto-generated rules. |
 | `x-uds.monitor[]` | Monitor rules for Prometheus scraping. When `service` is set, missing `selector`, `podSelector`, `portName`, `targetPort`, `path`, and `kind` are inferred from the Compose service. |

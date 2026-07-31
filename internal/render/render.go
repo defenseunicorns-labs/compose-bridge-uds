@@ -207,21 +207,9 @@ func writeChartMetadata(path string, app model.App) error {
 		Name:        app.Package.Name,
 		Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 		Type:        "application",
-		Version:     toChartVersion(app.Package.Version),
+		Version:     app.Package.Version,
 		AppVersion:  app.Package.Version,
 	})
-}
-
-// toChartVersion returns v when it is valid semver (X.Y.Z...), otherwise
-// returns "0.1.0". Helm requires the chart version field to be valid semver,
-// so non-semver package versions like "dev" must be mapped to a safe default.
-var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+`)
-
-func toChartVersion(v string) string {
-	if semverRe.MatchString(v) {
-		return v
-	}
-	return "0.1.0"
 }
 
 // writeChartValues writes a values document mapping each secret values key to a
@@ -264,7 +252,7 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 		Name:      app.Package.Name,
 		Namespace: app.Package.Namespace,
 		LocalPath: chartDirName,
-		Version:   toChartVersion(app.Package.Version),
+		Version:   app.Package.Version,
 	}
 	if hasSecrets {
 		chart.ValuesFiles = []string{zarfValuesRel}
@@ -1538,4 +1526,3 @@ type chartMetadata struct {
 type chartValues struct {
 	Secrets map[string]string `yaml:"secrets"`
 }
-

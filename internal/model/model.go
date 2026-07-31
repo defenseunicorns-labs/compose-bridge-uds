@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultVersion      = "dev"
+	DefaultVersion      = "0.1.0"
 	DependencyInitImage = "busybox:1.36"
 )
 
