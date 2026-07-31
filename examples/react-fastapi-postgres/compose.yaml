@@ -1,0 +1,33 @@
+name: react-fastapi-postgres
+
+services:
+  ui:
+    image: ${UI_IMAGE:-react-fastapi-postgres-ui:dev}
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    user: "101"
+    ports:
+      - name: http
+        target: 8080
+        published: "8080"
+        protocol: tcp
+        app_protocol: http
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/ | grep -q 'Compose Bridge'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+x-uds:
+  package:
+    name: react-fastapi-postgres
+    namespace: react-fastapi-postgres
+    version: 0.1.0
+  network:
+    expose:
+      - service: ui
+        host: react-fastapi-postgres
+  # Pass 1 is an unauthenticated Hello World. Add SSO deliberately in a later
+  # pass when the application flow is ready to exercise it.
+  sso: []

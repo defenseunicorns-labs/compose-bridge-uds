@@ -1,0 +1,29 @@
+# Compose Bridge and Zarf workflow artifacts
+out/
+packages/
+logs/
+.tmp/
+*.tar.zst
+
+# React / Vite
+ui/node_modules/
+ui/dist/
+ui/.vite/
+
+# Python artifacts for the future API service
+api/__pycache__/
+api/**/*.py[cod]
+api/.venv/
+api/.pytest_cache/
+api/.mypy_cache/
+api/.ruff_cache/
+api/.coverage
+api/htmlcov/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store

@@ -35,3 +35,4 @@ The transformation writes a Helm chart to `out/chart/`, a Zarf package definitio
 - [Compose support](docs/compose-support.md) describes supported configuration, known limitations, and local Dockerfile builds.
 - [UDS package generation](docs/uds-package.md) describes generated resources, `x-uds` extensions, secrets, and policy exemptions.
 - [`examples/full/compose.yaml`](examples/full/compose.yaml) demonstrates the complete supported configuration.
+- [`examples/react-fastapi-postgres`](examples/react-fastapi-postgres/README.md) demonstrates a phased vendor workflow from React and Compose to a deployed UDS package.
