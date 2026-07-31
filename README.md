@@ -16,8 +16,8 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys WordPress and MySQL from a Compose file.
 
 ```sh
-# 1. Stand up a local cluster with UDS Core Slim Dev
-uds deploy k3d-core-slim-dev:latest
+# 1. Create a local k3d cluster with UDS Core Slim Dev
+uds zarf package deploy oci://ghcr.io/defenseunicorns/dev/uds/checkpoints/k3d-core-slim-dev:1.9.0
 
 # 2. Transform the Compose application into a UDS Package
 cd examples/simple

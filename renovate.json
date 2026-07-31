@@ -13,5 +13,17 @@
       "matchManagers": ["gomod"],
       "groupName": "Go dependencies"
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update OCI package tags in the README",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": [
+        "uds zarf package deploy oci://(?<depName>ghcr\\.io/[^:]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
+    }
   ]
 }
