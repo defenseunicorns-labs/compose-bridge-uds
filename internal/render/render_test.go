@@ -39,7 +39,7 @@ services:
 	}
 }
 
-func TestLoadCanonicalSkipsBindMounts(t *testing.T) {
+func TestLoadCanonicalRejectsBindMounts(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -50,20 +50,16 @@ services:
       - ./data:/app/data
 `)
 
-	app, err := compose.LoadCanonicalYAML(input)
-	if err != nil {
-		t.Fatalf("expected bind mount to be skipped, got error: %v", err)
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil {
+		t.Fatal("expected bind mount to be rejected")
 	}
-	for _, svc := range app.Services {
-		for _, vm := range svc.Volumes {
-			if vm.Target == "/app/data" {
-				t.Fatalf("bind mount should have been skipped, but found volume mount for /app/data")
-			}
-		}
+	if !strings.Contains(err.Error(), "[bind-mount] services.api.volumes") {
+		t.Fatalf("expected actionable bind mount diagnostic, got %v", err)
 	}
 }
 
-func TestLoadCanonicalFileSkipsBindMountsAfterEnvFileNormalization(t *testing.T) {
+func TestLoadCanonicalFileRejectsBindMountsAfterEnvFileNormalization(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -85,8 +81,8 @@ services:
 	}
 
 	_, err := compose.LoadCanonicalFile(composePath)
-	if err != nil {
-		t.Fatalf("expected bind mount to be skipped after env_file normalization, got error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "[bind-mount]") {
+		t.Fatalf("expected bind mount diagnostic after env_file normalization, got %v", err)
 	}
 }
 
@@ -105,8 +101,55 @@ services:
 	if err == nil {
 		t.Fatalf("expected build without image to fail")
 	}
-	if !strings.Contains(err.Error(), "does not declare an explicit image") {
+	if !strings.Contains(err.Error(), "[build-image-unresolved]") {
 		t.Fatalf("expected build image validation error, got %v", err)
+	}
+}
+
+func TestLoadCanonicalAggregatesCompatibilityIssues(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    network_mode: host
+    platform: wasi/wasm
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil {
+		t.Fatal("expected compatibility validation to fail")
+	}
+	for _, code := range []string{"[bind-mount]", "[service-field] services.api.network_mode", "[service-field] services.api.platform"} {
+		if !strings.Contains(err.Error(), code) {
+			t.Fatalf("expected %q in aggregated error, got %v", code, err)
+		}
+	}
+}
+
+func TestWritePackagePreservesHostname(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    hostname: api-node
+`)
+	out := t.TempDir()
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if err := render.WritePackage(out, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	deployment := readFile(t, filepath.Join(out, "chart", "templates", "deployment-api.yaml"))
+	if !strings.Contains(deployment, "hostname: api-node") {
+		t.Fatalf("expected hostname in deployment\n%s", deployment)
 	}
 }
 

@@ -1,0 +1,229 @@
+name: Awesome Compose compatibility
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/awesome-compose.yml"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
+      - "internal/**"
+      - "main.go"
+      - "test/awesome-compose/**"
+  pull_request:
+    paths:
+      - ".github/workflows/awesome-compose.yml"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
+      - "internal/**"
+      - "main.go"
+      - "test/awesome-compose/**"
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Compatibility suite to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - static
+          - full
+          - smoke
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=github-releases depName=docker/compose
+  COMPOSE_VERSION: v5.3.1
+  COMPOSE_SHA256: f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959
+  # renovate: datasource=github-releases depName=k3d-io/k3d
+  K3D_VERSION: v5.9.0
+  K3D_SHA256: 06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0
+  AWESOME_COMPOSE_REF: 30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562
+  TRANSFORM_IMAGE: compose-bridge-uds:test
+
+jobs:
+  static:
+    if: github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'static'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Checkout Awesome Compose
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          repository: docker/awesome-compose
+          ref: ${{ env.AWESOME_COMPOSE_REF }}
+          path: .awesome-compose
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install Docker Compose
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+            --output docker-compose
+          echo "${COMPOSE_SHA256}  docker-compose" | sha256sum --check
+          sudo install -D --mode 0755 docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+
+      - name: Run static corpus
+        run: go run ./test/awesome-compose -mode static -repo .awesome-compose
+
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: awesome-compose-static
+          path: awesome-compose-report.*
+
+  full:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'full'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Checkout Awesome Compose
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          repository: docker/awesome-compose
+          ref: ${{ env.AWESOME_COMPOSE_REF }}
+          path: .awesome-compose
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Set up UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+        with:
+          version: v0.34.3
+
+      - name: Install Docker Compose
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+            --output docker-compose
+          echo "${COMPOSE_SHA256}  docker-compose" | sha256sum --check
+          sudo install -D --mode 0755 docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+
+      - name: Build transformation
+        run: docker build --tag "${TRANSFORM_IMAGE}" .
+
+      - name: Build and package supported corpus
+        run: go run ./test/awesome-compose -mode full -repo .awesome-compose -transform-image "${TRANSFORM_IMAGE}" -zarf-command "uds zarf"
+
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: awesome-compose-full
+          path: awesome-compose-report.*
+
+  smoke:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'smoke'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Checkout Awesome Compose
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          repository: docker/awesome-compose
+          ref: ${{ env.AWESOME_COMPOSE_REF }}
+          path: .awesome-compose
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Set up UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+        with:
+          version: v0.34.3
+
+      - name: Install Docker Compose
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+            --output docker-compose
+          echo "${COMPOSE_SHA256}  docker-compose" | sha256sum --check
+          sudo install -D --mode 0755 docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+
+      - name: Build transformation
+        run: docker build --tag "${TRANSFORM_IMAGE}" .
+
+      - name: Install k3d
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64" \
+            --output k3d
+          echo "${K3D_SHA256}  k3d" | sha256sum --check
+          sudo install --mode 0755 k3d /usr/local/bin/k3d
+
+      - name: Create UDS Core Slim cluster
+        run: uds zarf package deploy oci://ghcr.io/defenseunicorns/dev/uds/checkpoints/k3d-core-slim-dev:1.9.0 --confirm
+
+      - name: Run deployment smoke tests
+        run: go run ./test/awesome-compose -mode smoke -repo .awesome-compose -transform-image "${TRANSFORM_IMAGE}" -zarf-command "uds zarf"
+
+      - name: Collect cluster state
+        if: failure()
+        run: |
+          kubectl get pods --all-namespaces --output wide
+          kubectl get events --all-namespaces --sort-by=.lastTimestamp
+
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: awesome-compose-smoke
+          path: awesome-compose-report.*
+
+  upstream-drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Check upstream HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(git ls-remote https://github.com/docker/awesome-compose.git HEAD | cut -f1)
+          if [ "${latest}" = "${AWESOME_COMPOSE_REF}" ]; then
+            exit 0
+          fi
+          title="Awesome Compose corpus has changed"
+          body=$(printf 'Pinned ref: `%s`\nLatest ref: `%s`\n\nRun the static suite against the new ref and review every compatibility change before updating the manifest.' "${AWESOME_COMPOSE_REF}" "${latest}")
+          issue=$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')
+          if [ -n "${issue}" ]; then
+            gh issue edit "${issue}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi

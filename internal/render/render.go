@@ -311,6 +311,7 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 			Template: podTemplateSpec{
 				Metadata: objectMeta{Labels: serviceSelector(svc.Name)},
 				Spec: podSpec{
+					Hostname:       svc.Hostname,
 					InitContainers: initContainers,
 					Containers:     []containerSpec{container},
 					Volumes:        volumes,
@@ -1314,6 +1315,7 @@ type podTemplateSpec struct {
 }
 
 type podSpec struct {
+	Hostname       string          `yaml:"hostname,omitempty"`
 	InitContainers []containerSpec `yaml:"initContainers,omitempty"`
 	Containers     []containerSpec `yaml:"containers"`
 	Volumes        []volumeSpec    `yaml:"volumes,omitempty"`

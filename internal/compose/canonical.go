@@ -66,6 +66,9 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 	if err != nil {
 		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
 	}
+	if err := validateCompatibility(*project, raw); err != nil {
+		return model.App{}, err
+	}
 
 	return loadProject(*project, raw)
 }
@@ -129,13 +132,11 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		registerAlias(serviceAliases, normalized, normalized)
 	}
 
-	rawServices, _ := asMap(raw["services"])
 	services := make([]model.Service, 0, len(keys))
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
 		serviceName, _ := resolveAlias(serviceAliases, key)
-		rawServiceMap, _ := asMap(rawServices[key])
 
 		ports, err := parsePorts(rawSvc.Ports, rawSvc.Expose)
 		if err != nil {
@@ -160,13 +161,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 
 		image := strings.TrimSpace(rawSvc.Image)
 		usesBuild := rawSvc.Build != nil
-		if usesBuild {
-			if err := validateBuildImage(serviceName, image, rawServiceMap); err != nil {
-				return model.App{}, err
-			}
-		} else if image == "" {
-			return model.App{}, fmt.Errorf("service %q must define image", key)
-		}
 
 		services = append(services, model.Service{
 			Name:         serviceName,
@@ -181,6 +175,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			SecurityOpts: rawSvc.SecurityOpt,
 			Command:      copyCommand(rawSvc.Entrypoint),
 			Args:         copyCommand(rawSvc.Command),
+			Hostname:     strings.TrimSpace(rawSvc.Hostname),
 			Healthcheck:  parseHealthcheck(rawSvc.HealthCheck),
 			Volumes:      volumeMounts,
 			Secrets:      secretRefs,
@@ -319,25 +314,6 @@ func normalizeStringMap(value any, field string) (map[string]string, error) {
 		normalized[key] = text
 	}
 	return normalized, nil
-}
-
-func validateBuildImage(serviceName string, image string, rawService map[string]any) error {
-	trimmed := strings.TrimSpace(image)
-	if !hasExplicitImage(rawService) || trimmed == "" {
-		return fmt.Errorf("service %q uses build but does not declare an explicit image; specify `image:` and run `docker compose build` before conversion", serviceName)
-	}
-	return nil
-}
-
-func hasExplicitImage(rawService map[string]any) bool {
-	if len(rawService) == 0 {
-		return false
-	}
-	value, exists := rawService["image"]
-	if !exists {
-		return false
-	}
-	return strings.TrimSpace(asString(value)) != ""
 }
 
 func parseEnvironment(raw types.MappingWithEquals) []model.EnvVar {
@@ -518,8 +494,7 @@ func parseServiceVolumes(raw []types.ServiceVolumeConfig, serviceName string, al
 
 		switch mountType {
 		case "bind":
-			fmt.Fprintf(os.Stderr, "warning: service %q bind mount %q:%q skipped; bind mounts have no equivalent in Kubernetes\n", serviceName, source, target)
-			continue
+			return nil, fmt.Errorf("service %q bind mount %q:%q was not rejected during compatibility validation", serviceName, source, target)
 		case "volume":
 			name := strings.TrimSpace(source)
 			if name == "" {
