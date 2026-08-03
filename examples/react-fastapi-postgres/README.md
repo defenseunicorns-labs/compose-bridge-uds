@@ -25,6 +25,34 @@ Browser -> UDS Authservice -> UI NGINX -> FastAPI
 - A local UDS cluster, such as UDS Core Slim Dev on k3d
 - `kubectl` and `curl`
 
+## Local Docker Compose development
+
+Run the UI and API locally with a development-only identity injected by NGINX:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml up --build
+```
+
+Open <http://localhost:8080/>. React requests `/api/userinfo` through the same
+NGINX-to-FastAPI path used in UDS and displays `Local Developer` as the signed-in
+user.
+
+The shared NGINX configuration loads a small authorization-header snippet inside
+its `/api/` location. In production, `ui/nginx/api-auth.conf` forwards the token
+supplied by UDS Authservice. `compose.dev.yaml` replaces only that snippet with
+`ui/nginx/api-auth.dev.conf`, which supplies a fixed, unsigned JWT. The token is
+not a secret and is intended only to simulate the deployed identity header. It
+does not provide local login or access enforcement.
+
+The override is deliberately not named `compose.override.yaml`, so normal image
+builds and Compose Bridge conversion continue to use only the production
+configuration. Always pass both files when starting the local identity flow,
+and stop it with the corresponding command:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml down
+```
+
 ## Build and deploy
 
 Run the complete, phased workflow from this directory:
