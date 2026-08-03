@@ -82,6 +82,22 @@ h1 {
   box-shadow: 0 0 1rem rgba(52, 211, 153, 0.9);
 }
 
+.status--loading .status-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 1rem rgba(251, 191, 36, 0.8);
+}
+
+.status--error {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+}
+
+.status--error .status-dot {
+  background: #f87171;
+  box-shadow: 0 0 1rem rgba(248, 113, 113, 0.8);
+}
+
 .milestones {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

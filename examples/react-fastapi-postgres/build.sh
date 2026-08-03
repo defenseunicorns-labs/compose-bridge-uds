@@ -16,18 +16,19 @@ CLEAN_DEPLOY="${CLEAN_DEPLOY:-true}"
 
 PACKAGE_NAMESPACE="react-fastapi-postgres"
 
-# A new image tag on every build prevents Kubernetes from reusing an older
-# local image when the generated Deployment uses imagePullPolicy: IfNotPresent.
+# New image tags on every build prevent Kubernetes from reusing older local
+# images when the generated Deployments use imagePullPolicy: IfNotPresent.
 BUILD_ID="${BUILD_ID:-$(date -u +%Y%m%d%H%M%S)-$$}"
 UI_IMAGE="${UI_IMAGE:-react-fastapi-postgres-ui:$BUILD_ID}"
-export UI_IMAGE
+API_IMAGE="${API_IMAGE:-react-fastapi-postgres-api:$BUILD_ID}"
+export API_IMAGE UI_IMAGE
 
 # Generated files stay inside the example and are ignored by Git.
 OUT_DIR="$EXAMPLE_DIR/out"
 PACKAGE_DIR="$EXAMPLE_DIR/packages"
 LOG_DIR="$EXAMPLE_DIR/logs"
 BRIDGE_TMP_DIR="$EXAMPLE_DIR/.tmp"
-SMOKE_RESPONSE="$LOG_DIR/smoke-response.html"
+SMOKE_HEADERS="$LOG_DIR/smoke-response-headers.txt"
 
 CURRENT_PHASE="Setup"
 CURRENT_LOG=""
@@ -80,6 +81,7 @@ CURRENT_LOG="$LOG_DIR/01-preflight.log"
 : > "$CURRENT_LOG"
 printf '\n== [1/7] %s ==\n' "$CURRENT_PHASE" | tee -a "$CURRENT_LOG"
 printf 'UI image: %s\n' "$UI_IMAGE" | tee -a "$CURRENT_LOG"
+printf 'API image: %s\n' "$API_IMAGE" | tee -a "$CURRENT_LOG"
 
 for required_command in docker helm uds kubectl curl tee; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
@@ -100,7 +102,7 @@ run kubectl cluster-info
 
 # -----------------------------------------------------------------------------
 # Phase 2: Application Build
-# Build the React/NGINX image described by compose.yaml.
+# Build the React/NGINX and FastAPI images described by compose.yaml.
 # -----------------------------------------------------------------------------
 
 CURRENT_PHASE="Application Build"
@@ -173,7 +175,7 @@ printf 'created package: %s\n' "$PACKAGE_PATH" | tee -a "$CURRENT_LOG"
 
 # -----------------------------------------------------------------------------
 # Phase 6: UDS Deployment
-# Deploy the package archive and wait for the generated UI Deployment to roll out.
+# Deploy the package archive and wait for both generated Deployments to roll out.
 # -----------------------------------------------------------------------------
 
 CURRENT_PHASE="UDS Deployment"
@@ -183,6 +185,10 @@ printf '\n== [6/7] %s ==\n' "$CURRENT_PHASE" | tee -a "$CURRENT_LOG"
 
 run uds zarf package deploy "$PACKAGE_PATH" --confirm
 run kubectl rollout status \
+  deployment/api \
+  --namespace "$PACKAGE_NAMESPACE" \
+  --timeout 5m
+run kubectl rollout status \
   deployment/ui \
   --namespace "$PACKAGE_NAMESPACE" \
   --timeout 5m
@@ -190,7 +196,8 @@ run kubectl rollout status \
 
 # -----------------------------------------------------------------------------
 # Phase 7: Tenant Gateway Smoke Test
-# Exercise the same public HTTPS route a user opens in a browser.
+# Verify that Authservice intercepts an anonymous request and redirects it to
+# the UDS SSO endpoint instead of allowing it to reach the UI.
 # -----------------------------------------------------------------------------
 
 CURRENT_PHASE="Tenant Gateway Smoke Test"
@@ -204,15 +211,20 @@ run curl \
   --silent \
   --show-error \
   --insecure \
-  --location \
   --retry 12 \
   --retry-all-errors \
   --retry-delay 5 \
   --max-time 20 \
-  --output "$SMOKE_RESPONSE" \
+  --dump-header "$SMOKE_HEADERS" \
+  --output /dev/null \
   "https://$PUBLIC_HOST/"
 
-run grep --quiet "React on UDS" "$SMOKE_RESPONSE"
+run grep \
+  --quiet \
+  --ignore-case \
+  --extended-regexp \
+  '^location: https://sso\.uds\.dev/' \
+  "$SMOKE_HEADERS"
 
 printf '\nBuild complete.\nPackage: %s\nLogs: %s\n\n' \
   "$PACKAGE_PATH" \

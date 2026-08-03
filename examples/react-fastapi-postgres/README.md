@@ -1,18 +1,21 @@
 # React, FastAPI, and Postgres on UDS
 
-This example is being built in passes. Pass 1 contains only a React UI and
-focuses on the end-to-end vendor workflow:
+This example is being built in passes. The current application contains a React
+UI and a FastAPI service and follows the end-to-end vendor workflow:
 
 ```text
-Compose source -> Docker image -> Compose Bridge -> Zarf package -> UDS deployment
+Compose source -> Docker images -> Compose Bridge -> Zarf package -> UDS deployment
 ```
 
-The future passes will add the FastAPI API and Postgres service without
-changing the overall workflow.
+The first pass established plain tenant-gateway routing, and the second added
+UDS Authservice in front of the UI. The current pass adds an internal FastAPI
+service. NGINX forwards `/api/` requests and the Authservice-provided ID token to
+FastAPI, which returns selected user claims for the React UI. A future pass will
+add Postgres without changing the overall packaging workflow.
 
-Pass 1 intentionally disables inferred UDS SSO so the Hello World can verify
-plain tenant-gateway routing first. Authentication will be enabled deliberately
-in a later pass.
+```text
+Browser -> UDS Authservice -> UI NGINX -> FastAPI
+```
 
 ## Prerequisites
 
@@ -40,11 +43,15 @@ and independently logged:
 4. Generated Package Validation
 5. Zarf Package Creation
 6. UDS Deployment
-7. Tenant Gateway Smoke Test
+7. Authenticated Tenant Gateway Smoke Test
 
 The generated Helm chart is written to `out/`. The Zarf archive is written to
 `packages/`, and phase logs are written to `logs/`. These are generated
 artifacts and are ignored by Git.
+
+The final smoke test makes an anonymous request without following redirects and
+verifies that Authservice sends it to the UDS SSO endpoint. It does not automate
+a browser login or create a Keycloak user.
 
 The bridge phase uses `.tmp/` as its temporary directory. This keeps the
 canonical Compose model on the project path, which is available to OrbStack's
@@ -68,12 +75,14 @@ CLEAN_DEPLOY=false ./clean.sh
 
 The same setting can be passed to `build.sh`, which forwards it to `clean.sh`.
 
-Each build uses a unique UI image tag by default. This avoids stale images
-being selected by Kubernetes when the generated Deployment uses
-`imagePullPolicy: IfNotPresent`. To provide a specific image reference:
+Each build uses unique UI and API image tags by default. This avoids stale
+images being selected by Kubernetes when the generated Deployments use
+`imagePullPolicy: IfNotPresent`. To provide specific image references:
 
 ```sh
-UI_IMAGE=react-fastapi-postgres-ui:dev ./build.sh
+UI_IMAGE=react-fastapi-postgres-ui:dev \
+API_IMAGE=react-fastapi-postgres-api:dev \
+  ./build.sh
 ```
 
 The conversion uses the published Compose Bridge transformation image, pulling
@@ -88,6 +97,52 @@ This example intentionally consumes the published bridge image. Changes to
 the bridge source should be tested through the bridge repository's own image
 build workflow or by overriding `TRANSFORM_IMAGE` with another published tag,
 including `:latest` if that tag is available in the registry.
+
+## Access the authenticated UI
+
+After the build and deployment completes, open:
+
+```text
+https://react-fastapi-postgres.uds.dev/
+```
+
+Authservice redirects the browser to UDS SSO. Sign in with an existing UDS
+account, then the browser returns to the React UI. The example does not restrict
+access to a particular Keycloak group, so any authenticated UDS user is
+accepted. React requests `/api/userinfo` and displays the first available value
+from `name`, `preferred_username`, `email`, or `sub`.
+
+Authentication is enforced by UDS Core at the deployed tenant gateway. Running
+the containers directly with Docker does not put Authservice in front of them,
+and the API intentionally has no fake local user fallback.
+
+## User information API
+
+The API is internal to the Compose and Kubernetes network. Only the UI service
+is exposed through the tenant gateway; NGINX proxies same-origin `/api/`
+requests to FastAPI.
+
+`GET /api/userinfo` requires the bearer ID token inserted by Authservice and
+returns only selected standard claims:
+
+```json
+{
+  "sub": "user-id",
+  "name": "Example User",
+  "preferred_username": "example",
+  "email": "example@uds.dev"
+}
+```
+
+Optional claims are returned as `null`. Missing or malformed bearer tokens, and
+tokens without a string `sub`, receive `401 Unauthorized`. Responses use
+`Cache-Control: no-store`, and the raw token is never returned or logged.
+
+This pass relies on Authservice to validate the token before it reaches NGINX.
+FastAPI decodes the forwarded token without independently checking its signature
+because the claims are used only to display identity. Add independent issuer,
+audience, expiration, and signature validation before using the API for
+authorization or protected data.
 
 ## Inspect the package
 
@@ -110,6 +165,7 @@ values files, and rendered Kubernetes/UDS manifests.
 ## Directory ownership
 
 - `compose.yaml`, `build.sh`, `clean.sh`, and `inspect.sh` are the workflow source.
+- `api/` contains the FastAPI service, API tests, and its non-root image build.
 - `ui/` contains the React and NGINX source used to build the image.
 - `out/` is disposable Compose Bridge output.
 - `packages/` contains the local distribution archive.

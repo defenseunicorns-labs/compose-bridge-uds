@@ -1,12 +1,35 @@
 name: react-fastapi-postgres
 
 services:
+  api:
+    image: ${API_IMAGE:-react-fastapi-postgres-api:dev}
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    user: "10001"
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   ui:
     image: ${UI_IMAGE:-react-fastapi-postgres-ui:dev}
     build:
       context: ./ui
       dockerfile: Dockerfile
     user: "101"
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - name: http
         target: 8080
@@ -28,6 +51,10 @@ x-uds:
     expose:
       - service: ui
         host: react-fastapi-postgres
-  # Pass 1 is an unauthenticated Hello World. Add SSO deliberately in a later
-  # pass when the application flow is ready to exercise it.
-  sso: []
+  sso:
+    - name: React FastAPI Postgres
+      clientId: react-fastapi-postgres
+      redirectUris:
+        - https://react-fastapi-postgres.uds.dev/login
+      enableAuthserviceSelector:
+        app.kubernetes.io/name: ui

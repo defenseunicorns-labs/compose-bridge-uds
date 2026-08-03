@@ -10,15 +10,20 @@ ui/node_modules/
 ui/dist/
 ui/.vite/
 
-# Python artifacts for the future API service
+# Python artifacts
+.pytest_cache/
 api/__pycache__/
 api/**/*.py[cod]
 api/.venv/
-api/.pytest_cache/
 api/.mypy_cache/
 api/.ruff_cache/
 api/.coverage
 api/htmlcov/
+
+# Local agent tooling
+.agents/
+.codex/
+.pytest_cache/
 
 # Local configuration
 .env
