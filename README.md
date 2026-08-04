@@ -33,6 +33,5 @@ The transformation writes a Helm chart to `out/chart/`, a Zarf package definitio
 ## Documentation
 
 - [Compose support](docs/compose-support.md) describes supported configuration, known limitations, and local Dockerfile builds.
-- [Compatibility testing](docs/compatibility.md) describes the Awesome Compose corpus and runtime smoke tests.
 - [UDS package generation](docs/uds-package.md) describes generated resources, `x-uds` extensions, secrets, and policy exemptions.
 - [`examples/full/compose.yaml`](examples/full/compose.yaml) demonstrates the complete supported configuration.
