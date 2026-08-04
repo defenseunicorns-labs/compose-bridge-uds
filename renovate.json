@@ -10,7 +10,15 @@
   "prConcurrentLimit": 10,
   "packageRules": [
     {
+      "description": "Group non-major GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Group non-major Go module updates",
       "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor", "patch"],
       "groupName": "Go dependencies"
     }
   ],
