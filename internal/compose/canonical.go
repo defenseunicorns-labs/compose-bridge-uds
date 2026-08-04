@@ -494,7 +494,8 @@ func parseServiceVolumes(raw []types.ServiceVolumeConfig, serviceName string, al
 
 		switch mountType {
 		case "bind":
-			return nil, fmt.Errorf("service %q bind mount %q:%q was not rejected during compatibility validation", serviceName, source, target)
+			fmt.Fprintf(os.Stderr, "warning: service %q bind mount %q:%q skipped; bind mounts have no equivalent in Kubernetes\n", serviceName, source, target)
+			continue
 		case "volume":
 			name := strings.TrimSpace(source)
 			if name == "" {

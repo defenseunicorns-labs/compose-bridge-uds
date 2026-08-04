@@ -87,12 +87,7 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 			}
 			switch mountType {
 			case types.VolumeTypeBind:
-				issues = append(issues, CompatibilityIssue{
-					Code:        "bind-mount",
-					Path:        path + ".volumes",
-					Message:     fmt.Sprintf("bind mount %q to %q has no portable Kubernetes equivalent", mount.Source, mount.Target),
-					Remediation: "use an image, named volume, Compose config, or Compose secret",
-				})
+				continue
 			case "", types.VolumeTypeVolume:
 			default:
 				issues = append(issues, CompatibilityIssue{

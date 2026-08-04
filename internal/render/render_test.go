@@ -39,7 +39,7 @@ services:
 	}
 }
 
-func TestLoadCanonicalRejectsBindMounts(t *testing.T) {
+func TestLoadCanonicalSkipsBindMounts(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -48,18 +48,24 @@ services:
     image: ghcr.io/acme/api:1.0.0
     volumes:
       - ./data:/app/data
+      - app-data:/app/state
+volumes:
+  app-data:
 `)
 
-	_, err := compose.LoadCanonicalYAML(input)
-	if err == nil {
-		t.Fatal("expected bind mount to be rejected")
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("expected bind mount to be skipped, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "[bind-mount] services.api.volumes") {
-		t.Fatalf("expected actionable bind mount diagnostic, got %v", err)
+	if len(app.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(app.Services))
+	}
+	if len(app.Services[0].Volumes) != 1 || app.Services[0].Volumes[0].Target != "/app/state" {
+		t.Fatalf("expected named volume to remain and bind mount to be skipped, got %#v", app.Services[0].Volumes)
 	}
 }
 
-func TestLoadCanonicalFileRejectsBindMountsAfterEnvFileNormalization(t *testing.T) {
+func TestLoadCanonicalFileSkipsBindMountsAfterEnvFileNormalization(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -81,8 +87,8 @@ services:
 	}
 
 	_, err := compose.LoadCanonicalFile(composePath)
-	if err == nil || !strings.Contains(err.Error(), "[bind-mount]") {
-		t.Fatalf("expected bind mount diagnostic after env_file normalization, got %v", err)
+	if err != nil {
+		t.Fatalf("expected bind mount to be skipped after env_file normalization, got error: %v", err)
 	}
 }
 
@@ -123,10 +129,13 @@ services:
 	if err == nil {
 		t.Fatal("expected compatibility validation to fail")
 	}
-	for _, code := range []string{"[bind-mount]", "[service-field] services.api.network_mode", "[service-field] services.api.platform"} {
+	for _, code := range []string{"[service-field] services.api.network_mode", "[service-field] services.api.platform"} {
 		if !strings.Contains(err.Error(), code) {
 			t.Fatalf("expected %q in aggregated error, got %v", code, err)
 		}
+	}
+	if strings.Contains(err.Error(), "[bind-mount]") {
+		t.Fatalf("expected bind mount not to be a compatibility error, got %v", err)
 	}
 }
 
