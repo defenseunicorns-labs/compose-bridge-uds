@@ -113,6 +113,10 @@ func run(ctx context.Context, opts options) error {
 			return err
 		}
 	}
+	repoPath, err = filepath.Abs(repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve repository path: %w", err)
+	}
 	if err := validateCorpus(repoPath, cfg.Samples); err != nil {
 		return err
 	}
