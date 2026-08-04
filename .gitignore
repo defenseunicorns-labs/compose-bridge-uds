@@ -37,7 +37,3 @@ examples/**/out/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst
-
-# Awesome Compose compatibility reports
-/awesome-compose-report.json
-/awesome-compose-report.md

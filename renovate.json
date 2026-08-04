@@ -25,24 +25,12 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Update OCI package tags in documentation and workflows",
-      "managerFilePatterns": [
-        "/^README\\.md$/",
-        "/^\\.github/workflows/awesome-compose\\.yml$/"
-      ],
+      "description": "Update OCI package tags in documentation",
+      "managerFilePatterns": ["/^README\\.md$/"],
       "matchStrings": [
         "uds zarf package deploy oci://(?<depName>ghcr\\.io/[^:]+):(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "docker",
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "description": "Update pinned compatibility tool versions",
-      "managerFilePatterns": ["/^\\.github/workflows/awesome-compose\\.yml$/"],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>[^ ]+) depName=(?<depName>[^\\s]+)\\s+[A-Z0-9_]+_VERSION: (?<currentValue>v?[^\\s]+)"
-      ],
       "versioningTemplate": "semver"
     }
   ]
