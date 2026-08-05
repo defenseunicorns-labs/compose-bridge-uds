@@ -1,0 +1,6 @@
+# Conversion-only workaround for Docker Compose Bridge inspecting build-service
+# images before it starts the configured transformation. Do not use this file
+# with `docker compose up` or `docker compose build`.
+services:
+  server:
+    image: ${TRANSFORM_IMAGE:-ghcr.io/defenseunicorns-labs/compose-bridge-uds:edge}

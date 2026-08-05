@@ -1,0 +1,13 @@
+# Temporary workaround pending an upstream Docker Compose contribution.
+# Compose Bridge currently inspects or pulls every service image before it
+# starts a transformation, including services that declare build:. Give those
+# services the local development transformation image for conversion only. The
+# UDS transformer replaces these placeholders with package-owned images.
+#
+# Do not use this overlay with `docker compose up` or `docker compose build`.
+services:
+  api:
+    image: compose-bridge-uds:dev
+
+  ui:
+    image: compose-bridge-uds:dev

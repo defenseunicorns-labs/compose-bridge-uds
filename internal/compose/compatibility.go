@@ -63,22 +63,13 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 		path := "services." + serviceName
 		rawService, _ := asMap(rawServices[serviceName])
 
-		if strings.TrimSpace(service.Image) == "" {
-			if service.Build != nil {
-				issues = append(issues, CompatibilityIssue{
-					Code:        "build-image-unresolved",
-					Path:        path + ".image",
-					Message:     "the local build image was not resolved by Compose Bridge",
-					Remediation: "run `docker compose build` before conversion or declare `image:` explicitly",
-				})
-			} else {
-				issues = append(issues, CompatibilityIssue{
-					Code:        "image-required",
-					Path:        path + ".image",
-					Message:     "the service has no container image",
-					Remediation: "declare `image:` or `build:`",
-				})
-			}
+		if strings.TrimSpace(service.Image) == "" && service.Build == nil {
+			issues = append(issues, CompatibilityIssue{
+				Code:        "image-required",
+				Path:        path + ".image",
+				Message:     "the service has no container image or build definition",
+				Remediation: "declare `image:` or `build:`",
+			})
 		}
 
 		for _, mount := range service.Volumes {

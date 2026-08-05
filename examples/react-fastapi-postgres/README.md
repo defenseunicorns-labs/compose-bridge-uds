@@ -4,7 +4,7 @@ This example is being built in passes. The current application contains a React
 UI and a FastAPI service and follows the end-to-end vendor workflow:
 
 ```text
-Compose source -> Docker images -> Compose Bridge -> Zarf package -> UDS deployment
+Compose source -> Compose Bridge workspace -> Zarf package -> UDS deployment
 ```
 
 The first pass established plain tenant-gateway routing, and the second added
@@ -20,10 +20,10 @@ Browser -> UDS Authservice -> UI NGINX -> FastAPI
 ## Prerequisites
 
 - Docker with Docker Compose and the Compose Bridge plugin
-- Helm
+- Docker Buildx
 - UDS CLI
 - A local UDS cluster, such as UDS Core Slim Dev on k3d
-- `kubectl` and `curl`
+- `kubectl`
 
 ## Local Docker Compose development
 
@@ -44,91 +44,74 @@ supplied by UDS Authservice. `compose.dev.yaml` replaces only that snippet with
 not a secret and is intended only to simulate the deployed identity header. It
 does not provide local login or access enforcement.
 
-The override is deliberately not named `compose.override.yaml`, so normal image
-builds and Compose Bridge conversion continue to use only the production
-configuration. Always pass both files when starting the local identity flow,
-and stop it with the corresponding command:
+The development override is deliberately not named `compose.override.yaml`, so
+normal Compose commands continue to use only the production configuration.
+Always pass both files when starting the local identity flow, and stop it with
+the corresponding command:
 
 ```sh
 docker compose -f compose.yaml -f compose.dev.yaml down
 ```
 
-## Build and deploy
+## Build, deploy, and clean
 
-Run the complete, phased workflow from this directory:
+Each script has one job and assumes its required tools and cluster context are
+already configured.
+
+Build the local development Compose Bridge image, convert the Compose project,
+and create the Zarf package:
 
 ```sh
-./build.sh
+./scripts/build.sh
 ```
 
-`build.sh` checks its tools and the active Kubernetes context before removing
-anything. The build phases are intentionally visible and independently logged:
-
-1. Preflight
-2. Previous State Cleanup
-3. Application Build
-4. Compose Bridge Conversion
-5. Generated Package Validation
-6. Zarf Package Creation
-7. UDS Deployment
-8. Authenticated Tenant Gateway Smoke Test
-
-The generated Helm chart is written to `out/`. The Zarf archive is written to
-`packages/`, and phase logs are written to `logs/`. These are generated
-artifacts and are ignored by Git.
-
-The final smoke test makes an anonymous request without following redirects and
-verifies that Authservice sends it to the UDS SSO endpoint. It does not automate
-a browser login or create a Keycloak user.
+The build does not clean old output or touch the cluster. Run cleanup first
+when rebuilding an existing workspace. The generated Helm chart, temporary
+Buildx Bake definition, and OCI image archives are written under `out/`. The
+Zarf archive is written to `packages/`.
 
 The bridge phase uses `.tmp/` as its temporary directory. This keeps the
 canonical Compose model on the project path, which is available to OrbStack's
 Linux engine even when the host system temp directory is not. It is also
 ignored by Git and is not part of the package.
 
-Run the cleanup independently when needed:
+The conversion also explicitly loads `compose.bridge.yaml`. Current Docker
+Compose Bridge versions inspect or pull every service image before starting a
+transformation, even when a service declares `build:`. The overlay temporarily
+points API and UI at `compose-bridge-uds:dev` so conversion can reach the local
+transformer without building either application image first. The transformer
+replaces those placeholders with package-owned image references. Do not use
+this overlay with `docker compose up` or `docker compose build`; it can be
+removed once Docker Compose skips missing images for build services.
+
+Deploy the one archive in `packages/`:
 
 ```sh
-./clean.sh
+./scripts/deploy.sh
 ```
 
-Cleanup removes the `out/`, `packages/`, `logs/`, and `.tmp/` trees while
-preserving the deployed package by default. To remove that package too, first
-confirm the active Kubernetes context, then opt in explicitly:
+Deployment does not build or clean anything.
+
+Delete the application namespace and all generated workspace artifacts:
 
 ```sh
 kubectl config current-context
-CLEAN_DEPLOY=true ./clean.sh
+./scripts/clean.sh
 ```
 
-`build.sh` defaults to replacing an existing deployment so repeated runs keep
-the one-command workflow. Unlike standalone cleanup, it first completes
-preflight and prints the active Kubernetes context before removing anything.
-Set `CLEAN_DEPLOY=false ./build.sh` to prohibit deployment removal; preflight
-will stop if the package already exists.
+Cleanup always targets the `react-fastapi-postgres` namespace in the active
+Kubernetes context and removes `.tmp/`, `logs/`, `out/`, and `packages/`.
 
-Each build uses unique UI and API image tags by default. This avoids stale
-images being selected by Kubernetes when the generated Deployments use
-`imagePullPolicy: IfNotPresent`. To provide specific image references:
+The Compose services declare only `build:`. The bridge assigns package-owned
+references such as `zarf.internal/react-fastapi-postgres-api:0.1.0`, and the
+generated Deployments use `imagePullPolicy: Always`. Zarf package creation
+builds both `linux/amd64` and `linux/arm64` variants and packages their OCI
+archives. Update `x-uds.package.version` when preparing a new application
+release.
 
-```sh
-UI_IMAGE=react-fastapi-postgres-ui:dev \
-API_IMAGE=react-fastapi-postgres-api:dev \
-  ./build.sh
-```
-
-The conversion uses the published Compose Bridge transformation image, pulling
-it automatically when it is not already local. The repository's current image
-workflow publishes `edge` for `main`, so that is the default moving tag:
-
-```sh
-TRANSFORM_IMAGE=ghcr.io/defenseunicorns-labs/compose-bridge-uds:edge ./build.sh
-```
-
-This example intentionally consumes the published bridge image. Changes to
-the bridge source should be tested through the bridge repository's own image
-build workflow or by overriding `TRANSFORM_IMAGE` with another published tag,
-including `:latest` if that tag is available in the registry.
+The build script always builds the repository's current source as
+`compose-bridge-uds:dev` and uses that image for conversion. This keeps bridge
+development in the same explicit build flow as package generation.
 
 ## Access the authenticated UI
 
@@ -178,17 +161,12 @@ authorization or protected data.
 
 ## Inspect the package
 
-`inspect.sh` reads the Zarf archive directly. It does not read `out/` and can
-be run after the generated chart directory has been discarded:
+`scripts/inspect.sh` reads the one Zarf archive in `packages/` directly. It
+does not read `out/` and can be run after the generated chart directory has
+been discarded:
 
 ```sh
-./inspect.sh
-```
-
-You can also inspect a specific package:
-
-```sh
-./inspect.sh packages/zarf-package-react-fastapi-postgres-0.1.0.tar.zst
+./scripts/inspect.sh
 ```
 
 The report includes the package definition, bundled images, packaged chart
@@ -196,9 +174,9 @@ values files, and rendered Kubernetes/UDS manifests.
 
 ## Directory ownership
 
-- `compose.yaml`, `build.sh`, `clean.sh`, and `inspect.sh` are the workflow source.
+- `compose.yaml` and `compose.bridge.yaml` are the conversion source.
+- `scripts/` contains the focused build, deploy, clean, and inspect commands.
 - `api/` contains the FastAPI service, API tests, and its non-root image build.
 - `ui/` contains the React and NGINX source used to build the image.
 - `out/` is disposable Compose Bridge output.
 - `packages/` contains the local distribution archive.
-- `logs/` contains generated phase diagnostics.
