@@ -1,20 +1,18 @@
 # React, FastAPI, and Postgres on UDS
 
-This example is being built in passes. The current application contains a React
-UI and a FastAPI service and follows the end-to-end vendor workflow:
+This example contains a React UI, a FastAPI service, and PostgreSQL and follows
+the end-to-end vendor workflow:
 
 ```text
 Compose source -> Compose Bridge workspace -> Zarf package -> UDS deployment
 ```
 
-The first pass established plain tenant-gateway routing, and the second added
-UDS Authservice in front of the UI. The current pass adds an internal FastAPI
-service. NGINX forwards `/api/` requests and the Authservice-provided ID token to
-FastAPI, which returns selected user claims for the React UI. A future pass will
-add Postgres without changing the overall packaging workflow.
+UDS Authservice protects the UI, NGINX forwards same-origin `/api/` requests and
+the Authservice-provided ID token to FastAPI, and PostgreSQL persists messages
+with the authenticated sender identity.
 
 ```text
-Browser -> UDS Authservice -> UI NGINX -> FastAPI
+Browser -> UDS Authservice -> UI NGINX -> FastAPI -> PostgreSQL
 ```
 
 ## Prerequisites
@@ -33,9 +31,9 @@ Run the UI and API locally with a development-only identity injected by NGINX:
 docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
-Open <http://localhost:8080/>. React requests `/api/userinfo` through the same
-NGINX-to-FastAPI path used in UDS and displays `Local Developer` as the signed-in
-user.
+Open <http://localhost:8080/>. React uses the same NGINX-to-FastAPI path used in
+UDS, displays `Local Developer` as the signed-in user, and stores messages in
+the local PostgreSQL volume.
 
 The shared NGINX configuration loads a small authorization-header snippet inside
 its `/api/` location. In production, `ui/nginx/api-auth.conf` forwards the token
@@ -52,6 +50,10 @@ the corresponding command:
 ```sh
 docker compose -f compose.yaml -f compose.dev.yaml down
 ```
+
+That command preserves the database volume. Add `--volumes` when the local
+messages should also be deleted. `postgres-password.dev.txt` contains only the
+fixed local development password; it is not used as the deployed password.
 
 ## Build, deploy, and clean
 
@@ -90,7 +92,8 @@ Deploy the one archive in `packages/`:
 ./scripts/deploy.sh
 ```
 
-Deployment does not build or clean anything.
+Deployment does not build or clean anything. It prompts for the PostgreSQL
+password because the Compose secret becomes a sensitive Zarf variable.
 
 Delete the application namespace and all generated workspace artifacts:
 
@@ -99,15 +102,15 @@ kubectl config current-context
 ./scripts/clean.sh
 ```
 
-Cleanup always targets the `react-fastapi-postgres` namespace in the active
-Kubernetes context and removes `.tmp/`, `logs/`, `out/`, and `packages/`.
+Cleanup stops the local Compose project, deletes its PostgreSQL volume, targets
+the `react-fastapi-postgres` namespace in the active Kubernetes context, and
+removes `.tmp/`, `logs/`, `out/`, and `packages/`.
 
-The Compose services declare only `build:`. The bridge assigns package-owned
-references such as `zarf.internal/react-fastapi-postgres-api:0.1.0`, and the
-generated Deployments use `imagePullPolicy: Always`. Zarf package creation
-builds both `linux/amd64` and `linux/arm64` variants and packages their OCI
-archives. Update `x-uds.package.version` when preparing a new application
-release.
+The API and UI declare `build:` and receive package-owned references such as
+`zarf.internal/react-fastapi-postgres-api:0.1.0`. PostgreSQL declares only the
+official image and is pulled into the Zarf package normally. Zarf package
+creation builds both application images for `linux/amd64` and `linux/arm64`.
+Update `x-uds.package.version` when preparing a new application release.
 
 The build script always builds the repository's current source as
 `compose-bridge-uds:dev` and uses that image for conversion. This keeps bridge
@@ -125,7 +128,8 @@ Authservice redirects the browser to UDS SSO. Sign in with an existing UDS
 account, then the browser returns to the React UI. The example does not restrict
 access to a particular Keycloak group, so any authenticated UDS user is
 accepted. React requests `/api/userinfo` and displays the first available value
-from `name`, `preferred_username`, `email`, or `sub`.
+from `name`, `preferred_username`, `email`, or `sub`. The same fallback order is
+stored with each message alongside the stable token subject.
 
 Authentication is enforced by UDS Core at the deployed tenant gateway. Running
 the containers directly with Docker does not put Authservice in front of them,
@@ -155,9 +159,54 @@ tokens without a string `sub`, receive `401 Unauthorized`. Responses use
 
 This pass relies on Authservice to validate the token before it reaches NGINX.
 FastAPI decodes the forwarded token without independently checking its signature
-because the claims are used only to display identity. Add independent issuer,
-audience, expiration, and signature validation before using the API for
-authorization or protected data.
+because this deployment trusts Authservice to validate every public request.
+Add independent issuer, audience, expiration, and signature validation before
+making the API reachable through any path that bypasses Authservice.
+
+## Messages API
+
+Both message endpoints require the bearer ID token inserted by Authservice.
+The sender is always derived by FastAPI; clients cannot submit or override it.
+
+Create a message:
+
+```http
+POST /api/messages
+Content-Type: application/json
+
+{"text":"Hello from UDS"}
+```
+
+The API trims the text, accepts between 1 and 500 characters, and responds with
+`201 Created`:
+
+```json
+{
+  "id": 1,
+  "text": "Hello from UDS",
+  "sender": {
+    "sub": "user-id",
+    "name": "Example User"
+  },
+  "created_at": "2026-08-05T16:00:00Z"
+}
+```
+
+`GET /api/messages` returns all messages newest-first. Database connection
+failures return `503 Database unavailable` without exposing credentials.
+
+## Database lifecycle
+
+PostgreSQL uses the `postgres-data` named volume. The initial messages table is
+defined as an inline Compose config mounted into
+`/docker-entrypoint-initdb.d/001-messages.sql`. PostgreSQL runs that file only
+when initializing an empty volume. This keeps the first database pass small;
+schema changes against existing data will require a migration workflow later.
+
+PostgreSQL and FastAPI mount the same `postgres-password` Compose secret. Local
+Compose reads the development-only file, while the bridge generates a sensitive
+Zarf variable and Kubernetes Secret for deployment. PostgreSQL is internal-only
+and is not exposed through the tenant gateway.
 
 ## Inspect the package
 
@@ -170,12 +219,15 @@ been discarded:
 ```
 
 The report includes the package definition, bundled images, packaged chart
-values files, and rendered Kubernetes/UDS manifests.
+values files, and rendered Kubernetes/UDS manifests. Inspection substitutes the
+obvious placeholder `INSPECTION_ONLY` for the database password so it remains
+non-interactive and never needs the deployment credential.
 
 ## Directory ownership
 
 - `compose.yaml` and `compose.bridge.yaml` are the conversion source.
 - `scripts/` contains the focused build, deploy, clean, and inspect commands.
+- `postgres-password.dev.txt` is the non-secret local Compose password.
 - `api/` contains the FastAPI service, API tests, and its non-root image build.
 - `ui/` contains the React and NGINX source used to build the image.
 - `out/` is disposable Compose Bridge output.

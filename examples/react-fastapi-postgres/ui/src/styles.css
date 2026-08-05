@@ -21,7 +21,7 @@ body {
 }
 
 button,
-input {
+textarea {
   font: inherit;
 }
 
@@ -35,8 +35,7 @@ input {
   max-width: 760px;
 }
 
-.eyebrow,
-.milestone-label {
+.eyebrow {
   margin: 0;
   color: #67e8f9;
   font-size: 0.76rem;
@@ -98,38 +97,164 @@ h1 {
   box-shadow: 0 0 1rem rgba(248, 113, 113, 0.8);
 }
 
-.milestones {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
+.message-board {
   margin-top: 6rem;
-}
-
-.milestone {
-  min-height: 190px;
-  padding: 1.5rem;
+  overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 1.25rem;
-  background: rgba(15, 23, 42, 0.68);
+  border-radius: 1.5rem;
+  background: rgba(15, 23, 42, 0.72);
   box-shadow: 0 1.5rem 4rem rgba(2, 8, 23, 0.24);
 }
 
-.milestone h2 {
-  margin: 1.5rem 0 0.5rem;
-  font-size: 1.8rem;
+.message-board-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 2rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
 }
 
-.milestone p:last-child {
+.message-board-header h2 {
+  margin: 0.6rem 0 0;
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.04em;
+}
+
+.message-board-header > p {
   margin: 0;
   color: #94a3b8;
-  line-height: 1.6;
+  font-size: 0.9rem;
+}
+
+.message-form {
+  padding: 2rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.message-form label {
+  display: block;
+  margin-bottom: 0.65rem;
+  font-weight: 700;
+}
+
+.message-form textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 0.9rem;
+  outline: none;
+  background: rgba(2, 8, 23, 0.55);
+  color: #e5eefb;
+  line-height: 1.55;
+}
+
+.message-form textarea:focus {
+  border-color: #67e8f9;
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.14);
+}
+
+.message-form textarea::placeholder {
+  color: #64748b;
+}
+
+.message-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.message-form-actions span {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.message-form button {
+  padding: 0.75rem 1.2rem;
+  border: 0;
+  border-radius: 999px;
+  background: #22d3ee;
+  color: #082f49;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.message-form button:hover:not(:disabled) {
+  background: #67e8f9;
+}
+
+.message-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.form-error {
+  margin: 1rem 0 0;
+  color: #fca5a5;
+}
+
+.messages > p {
+  margin: 0;
+  padding: 2rem;
+  color: #94a3b8;
+}
+
+.messages > .form-error {
+  color: #fca5a5;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+th,
+td {
+  padding: 1.15rem 2rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  vertical-align: top;
+}
+
+th {
+  color: #67e8f9;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+td:first-child {
+  width: 55%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+td:nth-child(2) {
+  color: #cbd5e1;
+}
+
+td:last-child {
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 footer {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  margin-top: 6rem;
+  margin-top: 4rem;
   padding-top: 1rem;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
   color: #64748b;
@@ -142,13 +267,28 @@ footer {
     padding-top: 4rem;
   }
 
-  .milestones {
-    grid-template-columns: 1fr;
+  .message-board {
     margin-top: 4rem;
+  }
+
+  .message-board-header,
+  .message-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .message-board-header,
+  .message-form {
+    padding: 1.5rem;
+  }
+
+  th,
+  td {
+    padding-right: 1.5rem;
+    padding-left: 1.5rem;
   }
 
   footer {
     flex-direction: column;
-    margin-top: 4rem;
   }
 }

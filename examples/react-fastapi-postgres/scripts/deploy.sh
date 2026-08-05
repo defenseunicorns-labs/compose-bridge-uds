@@ -4,4 +4,5 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-uds zarf package deploy packages/zarf-package-*.tar.zst --confirm
+# Keep the interactive variable prompt; --confirm would deploy an empty password.
+uds zarf package deploy packages/zarf-package-*.tar.zst

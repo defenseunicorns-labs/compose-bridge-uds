@@ -6,6 +6,17 @@ services:
       context: ./api
       dockerfile: Dockerfile
     user: "10001"
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: messages
+      POSTGRES_USER: messages
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    depends_on:
+      db:
+        condition: service_healthy
     expose:
       - "8000"
     healthcheck:
@@ -19,6 +30,30 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+
+  db:
+    image: postgres:18.4-bookworm
+    user: "999"
+    environment:
+      POSTGRES_DB: messages
+      POSTGRES_USER: messages
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    configs:
+      - source: messages-schema
+        target: /docker-entrypoint-initdb.d/001-messages.sql
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username messages --dbname messages
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   ui:
     build:
@@ -39,6 +74,27 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+
+volumes:
+  postgres-data: {}
+
+secrets:
+  postgres-password:
+    # Development-only value for local Compose. Zarf prompts for the deployed value.
+    file: ./postgres-password.dev.txt
+
+configs:
+  messages-schema:
+    content: |
+      CREATE TABLE IF NOT EXISTS messages (
+          id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          text TEXT NOT NULL,
+          sender_sub TEXT NOT NULL,
+          sender_name TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT messages_text_length
+              CHECK (char_length(btrim(text)) BETWEEN 1 AND 500)
+      );
 
 x-uds:
   package:
