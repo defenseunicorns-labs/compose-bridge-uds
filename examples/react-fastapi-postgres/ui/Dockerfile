@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM ghcr.io/nginx/nginx-unprivileged:1.30.4-alpine3.24
 
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/api-auth.conf /etc/nginx/conf.d/includes/api-auth.conf

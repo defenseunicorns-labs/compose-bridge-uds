@@ -61,17 +61,17 @@ Run the complete, phased workflow from this directory:
 ./build.sh
 ```
 
-Before the phases begin, `build.sh` invokes `clean.sh` to remove the previous
-generated artifacts and deployment. The build phases are intentionally visible
-and independently logged:
+`build.sh` checks its tools and the active Kubernetes context before removing
+anything. The build phases are intentionally visible and independently logged:
 
 1. Preflight
-2. Application Build
-3. Compose Bridge Conversion
-4. Generated Package Validation
-5. Zarf Package Creation
-6. UDS Deployment
-7. Authenticated Tenant Gateway Smoke Test
+2. Previous State Cleanup
+3. Application Build
+4. Compose Bridge Conversion
+5. Generated Package Validation
+6. Zarf Package Creation
+7. UDS Deployment
+8. Authenticated Tenant Gateway Smoke Test
 
 The generated Helm chart is written to `out/`. The Zarf archive is written to
 `packages/`, and phase logs are written to `logs/`. These are generated
@@ -92,16 +92,20 @@ Run the cleanup independently when needed:
 ./clean.sh
 ```
 
-Cleanup removes the `out/`, `packages/`, `logs/`, and `.tmp/` trees. It also
-removes an existing `react-fastapi-postgres` Zarf package so generated resources
-are tested from a clean state. Preserve the deployed package while still
-removing local artifacts with:
+Cleanup removes the `out/`, `packages/`, `logs/`, and `.tmp/` trees while
+preserving the deployed package by default. To remove that package too, first
+confirm the active Kubernetes context, then opt in explicitly:
 
 ```sh
-CLEAN_DEPLOY=false ./clean.sh
+kubectl config current-context
+CLEAN_DEPLOY=true ./clean.sh
 ```
 
-The same setting can be passed to `build.sh`, which forwards it to `clean.sh`.
+`build.sh` defaults to replacing an existing deployment so repeated runs keep
+the one-command workflow. Unlike standalone cleanup, it first completes
+preflight and prints the active Kubernetes context before removing anything.
+Set `CLEAN_DEPLOY=false ./build.sh` to prohibit deployment removal; preflight
+will stop if the package already exists.
 
 Each build uses unique UI and API image tags by default. This avoids stale
 images being selected by Kubernetes when the generated Deployments use
