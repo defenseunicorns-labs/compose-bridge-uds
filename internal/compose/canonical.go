@@ -103,6 +103,10 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		return model.App{}, err
 	}
 
+	networkAliases, err := normalizeTopLevelNetworks(project.Networks)
+	if err != nil {
+		return model.App{}, err
+	}
 	volumes, volumeAliases, err := normalizeTopLevelVolumes(project.Volumes)
 	if err != nil {
 		return model.App{}, err
@@ -142,6 +146,10 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q ports: %w", key, err)
 		}
+		networks, err := parseServiceNetworks(rawSvc.Networks, networkAliases)
+		if err != nil {
+			return model.App{}, fmt.Errorf("service %q networks: %w", key, err)
+		}
 		volumeMounts, err := parseServiceVolumes(rawSvc.Volumes, serviceName, volumeAliases, volumes)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q volumes: %w", key, err)
@@ -167,6 +175,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			Image:        image,
 			UsesBuild:    usesBuild,
 			Ports:        ports,
+			Networks:     networks,
 			Env:          parseEnvironment(rawSvc.Environment),
 			User:         strings.TrimSpace(rawSvc.User),
 			Privileged:   rawSvc.Privileged,
@@ -594,6 +603,24 @@ func parseDependsOn(raw types.DependsOnConfig, serviceAliases map[string]string)
 	return deps, nil
 }
 
+func parseServiceNetworks(raw map[string]*types.ServiceNetworkConfig, aliases map[string]string) ([]string, error) {
+	networks := make([]string, 0, len(raw))
+	seen := map[string]struct{}{}
+	for rawName := range raw {
+		name, ok := resolveAlias(aliases, rawName)
+		if !ok {
+			return nil, fmt.Errorf("unknown network %q", rawName)
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		networks = append(networks, name)
+	}
+	sort.Strings(networks)
+	return networks, nil
+}
+
 func parseResources(raw *types.DeployConfig) model.Resources {
 	if raw == nil {
 		return model.Resources{}
@@ -629,6 +656,27 @@ func normalizeTopLevelVolumes(raw types.Volumes) (map[string]model.Volume, map[s
 		}
 	}
 	return volumes, aliases, nil
+}
+
+func normalizeTopLevelNetworks(raw types.Networks) (map[string]string, error) {
+	aliases := map[string]string{}
+	seen := map[string]struct{}{}
+	for key, network := range raw {
+		normalized, err := normalizeName(key)
+		if err != nil {
+			return nil, fmt.Errorf("invalid top-level network name %q: %w", key, err)
+		}
+		if _, exists := seen[normalized]; exists {
+			return nil, fmt.Errorf("duplicate normalized top-level network name %q", normalized)
+		}
+		seen[normalized] = struct{}{}
+		registerAlias(aliases, key, normalized)
+		registerAlias(aliases, normalized, normalized)
+		if bool(network.External) {
+			fmt.Fprintf(os.Stderr, "warning: external Compose network %q treated as package-local; declare access to external workloads with x-uds.network.allow\n", key)
+		}
+	}
+	return aliases, nil
 }
 
 func normalizeTopLevelSecrets(raw types.Secrets) (map[string]model.Secret, map[string]string, error) {

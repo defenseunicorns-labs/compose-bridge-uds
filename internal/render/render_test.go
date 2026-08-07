@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,125 @@ services:
 	}
 }
 
+func TestLoadCanonicalPreservesNetworkMemberships(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  frontend:
+    image: ghcr.io/acme/frontend:1.0.0
+    networks: [front_end]
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [front_end, back]
+  db:
+    image: postgres:16
+    networks: [back]
+networks:
+  front_end:
+  back:
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("expected different network memberships to be supported, got %v", err)
+	}
+	memberships := map[string]string{}
+	for _, svc := range app.Services {
+		memberships[svc.Name] = strings.Join(svc.Networks, ",")
+	}
+	for service, want := range map[string]string{
+		"frontend": "front-end",
+		"api":      "back,front-end",
+		"db":       "back",
+	} {
+		if got := memberships[service]; got != want {
+			t.Fatalf("expected %s networks %q, got %q", service, want, got)
+		}
+	}
+}
+
+func TestLoadCanonicalRejectsCollidingNormalizedNetworkNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [front_end]
+networks:
+  front_end:
+  front-end:
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil || !strings.Contains(err.Error(), `duplicate normalized top-level network name "front-end"`) {
+		t.Fatalf("expected normalized network collision, got %v", err)
+	}
+}
+
+func TestLoadCanonicalPreservesLocalMembershipForExternalNetworks(t *testing.T) {
+	input := []byte(`name: demo
+services:
+  ui:
+    image: ghcr.io/acme/ui:1.0.0
+    networks: [ui-api]
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [ui-api, api-db]
+  db:
+    image: postgres:16
+    networks: [api-db]
+networks:
+  ui-api:
+    external: true
+  api-db:
+`)
+
+	originalStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stderr = writer
+	app, err := compose.LoadCanonicalYAML(input)
+	os.Stderr = originalStderr
+	if closeErr := writer.Close(); closeErr != nil {
+		t.Fatalf("close stderr writer: %v", closeErr)
+	}
+	warning, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatalf("read stderr: %v", readErr)
+	}
+	if closeErr := reader.Close(); closeErr != nil {
+		t.Fatalf("close stderr reader: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("expected external network to warn without stopping conversion, got %v", err)
+	}
+	for _, want := range []string{
+		`external Compose network "ui-api" treated as package-local`,
+		"declare access to external workloads with x-uds.network.allow",
+	} {
+		if !strings.Contains(string(warning), want) {
+			t.Fatalf("expected external network warning to contain %q, got %q", want, warning)
+		}
+	}
+	memberships := map[string]string{}
+	for _, svc := range app.Services {
+		memberships[svc.Name] = strings.Join(svc.Networks, ",")
+	}
+	for service, want := range map[string]string{
+		"ui":  "ui-api",
+		"api": "api-db,ui-api",
+		"db":  "api-db",
+	} {
+		if got := memberships[service]; got != want {
+			t.Fatalf("expected %s networks %q, got %q", service, want, got)
+		}
+	}
+}
+
 func TestWritePackagePreservesHostname(t *testing.T) {
 	t.Parallel()
 
@@ -159,6 +279,148 @@ services:
 	deployment := readFile(t, filepath.Join(out, "chart", "templates", "deployment-api.yaml"))
 	if !strings.Contains(deployment, "hostname: api-node") {
 		t.Fatalf("expected hostname in deployment\n%s", deployment)
+	}
+}
+
+func TestWritePackagePreservesDifferentNetworkMemberships(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  package:
+    namespace: demo-ns
+  network:
+    allow:
+      - description: external-api
+        direction: Egress
+        remoteHost: api.example.com
+services:
+  frontend:
+    image: ghcr.io/acme/frontend:1.0.0
+    networks: [front]
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [front, back]
+  db:
+    image: postgres:16
+    networks: [back]
+networks:
+  front:
+  back:
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	deploymentLabels := func(service string) map[string]any {
+		deployment := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "deployment-"+service+".yaml"))
+		spec := mustMap(t, deployment["spec"])
+		template := mustMap(t, spec["template"])
+		metadata := mustMap(t, template["metadata"])
+		return mustMap(t, metadata["labels"])
+	}
+
+	frontendLabels := deploymentLabels("frontend")
+	if got := frontendLabels["network.compose.bridge.uds.dev/front"]; got != "true" {
+		t.Fatalf("expected frontend membership label, got %#v", frontendLabels)
+	}
+	if _, exists := frontendLabels["network.compose.bridge.uds.dev/back"]; exists {
+		t.Fatalf("did not expect frontend on back network: %#v", frontendLabels)
+	}
+	apiLabels := deploymentLabels("api")
+	for _, key := range []string{"network.compose.bridge.uds.dev/front", "network.compose.bridge.uds.dev/back"} {
+		if got := apiLabels[key]; got != "true" {
+			t.Fatalf("expected api membership label %q, got %#v", key, apiLabels)
+		}
+	}
+
+	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	network := mustMap(t, spec["network"])
+	allows, ok := network["allow"].([]any)
+	if !ok || len(allows) != 5 {
+		t.Fatalf("expected four Compose network rules plus one explicit rule, got %#v", network["allow"])
+	}
+	rules := map[string]map[string]any{}
+	for _, value := range allows {
+		rule := mustMap(t, value)
+		if description, _ := rule["description"].(string); description != "" {
+			rules[description] = rule
+		}
+	}
+	for _, networkName := range []string{"back", "front"} {
+		labelKey := "network.compose.bridge.uds.dev/" + networkName
+		for _, direction := range []string{"Ingress", "Egress"} {
+			description := "compose-" + networkName + "-" + strings.ToLower(direction)
+			rule, exists := rules[description]
+			if !exists {
+				t.Fatalf("expected rule %q in %#v", description, rules)
+			}
+			if got := rule["direction"]; got != direction {
+				t.Fatalf("expected %s direction %s, got %#v", description, direction, got)
+			}
+			if got := rule["remoteNamespace"]; got != "demo-ns" {
+				t.Fatalf("expected %s to stay in package namespace, got %#v", description, got)
+			}
+			if got := mustMap(t, rule["selector"])[labelKey]; got != "true" {
+				t.Fatalf("expected %s local selector, got %#v", description, rule["selector"])
+			}
+			if got := mustMap(t, rule["remoteSelector"])[labelKey]; got != "true" {
+				t.Fatalf("expected %s remote selector, got %#v", description, rule["remoteSelector"])
+			}
+			if _, exists := rule["remoteGenerated"]; exists {
+				t.Fatalf("did not expect broad generated remote for %s", description)
+			}
+		}
+	}
+	if _, exists := rules["external-api"]; !exists {
+		t.Fatalf("expected explicit x-uds allow rule to be preserved, got %#v", rules)
+	}
+}
+
+func TestWritePackageKeepsBroadRulesForSharedNetworkMembership(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+  db:
+    image: postgres:16
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	network := mustMap(t, spec["network"])
+	allows, ok := network["allow"].([]any)
+	if !ok || len(allows) != 2 {
+		t.Fatalf("expected existing ingress and egress defaults, got %#v", network["allow"])
+	}
+	for index, direction := range []string{"Ingress", "Egress"} {
+		rule := mustMap(t, allows[index])
+		if rule["direction"] != direction || rule["remoteGenerated"] != "IntraNamespace" {
+			t.Fatalf("expected %s IntraNamespace rule, got %#v", direction, rule)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	if strings.Contains(deployment, "network.compose.bridge.uds.dev/") {
+		t.Fatalf("did not expect membership labels for a shared network\n%s", deployment)
 	}
 }
 

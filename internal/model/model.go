@@ -110,6 +110,7 @@ type Service struct {
 	Image        string
 	UsesBuild    bool
 	Ports        []Port
+	Networks     []string
 	Env          []EnvVar
 	User         string
 	Privileged   bool
