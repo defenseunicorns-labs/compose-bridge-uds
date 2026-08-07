@@ -264,14 +264,14 @@ networks:
 	}
 
 	frontendLabels := deploymentLabels("frontend")
-	if got := frontendLabels["compose.bridge.uds.dev/front"]; got != "true" {
+	if got := frontendLabels["network.compose.bridge.uds.dev/front"]; got != "true" {
 		t.Fatalf("expected frontend membership label, got %#v", frontendLabels)
 	}
-	if _, exists := frontendLabels["compose.bridge.uds.dev/back"]; exists {
+	if _, exists := frontendLabels["network.compose.bridge.uds.dev/back"]; exists {
 		t.Fatalf("did not expect frontend on back network: %#v", frontendLabels)
 	}
 	apiLabels := deploymentLabels("api")
-	for _, key := range []string{"compose.bridge.uds.dev/front", "compose.bridge.uds.dev/back"} {
+	for _, key := range []string{"network.compose.bridge.uds.dev/front", "network.compose.bridge.uds.dev/back"} {
 		if got := apiLabels[key]; got != "true" {
 			t.Fatalf("expected api membership label %q, got %#v", key, apiLabels)
 		}
@@ -292,7 +292,7 @@ networks:
 		}
 	}
 	for _, networkName := range []string{"back", "front"} {
-		labelKey := "compose.bridge.uds.dev/" + networkName
+		labelKey := "network.compose.bridge.uds.dev/" + networkName
 		for _, direction := range []string{"Ingress", "Egress"} {
 			description := "compose-" + networkName + "-" + strings.ToLower(direction)
 			rule, exists := rules[description]
@@ -356,7 +356,7 @@ services:
 	}
 
 	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
-	if strings.Contains(deployment, "compose.bridge.uds.dev/") {
+	if strings.Contains(deployment, "network.compose.bridge.uds.dev/") {
 		t.Fatalf("did not expect membership labels for a shared network\n%s", deployment)
 	}
 }

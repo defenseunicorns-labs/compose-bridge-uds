@@ -27,7 +27,7 @@ const (
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
 	secretValuePlaceholder    = "__HELM_SECRET_VALUE__"
-	composeNetworkLabelPrefix = "compose.bridge.uds.dev/"
+	composeNetworkLabelPrefix = "network.compose.bridge.uds.dev/"
 )
 
 func WritePackage(root string, app model.App) error {
