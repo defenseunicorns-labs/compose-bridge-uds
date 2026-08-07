@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +194,68 @@ networks:
 	_, err := compose.LoadCanonicalYAML(input)
 	if err == nil || !strings.Contains(err.Error(), `duplicate normalized top-level network name "front-end"`) {
 		t.Fatalf("expected normalized network collision, got %v", err)
+	}
+}
+
+func TestLoadCanonicalPreservesLocalMembershipForExternalNetworks(t *testing.T) {
+	input := []byte(`name: demo
+services:
+  ui:
+    image: ghcr.io/acme/ui:1.0.0
+    networks: [ui-api]
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [ui-api, api-db]
+  db:
+    image: postgres:16
+    networks: [api-db]
+networks:
+  ui-api:
+    external: true
+  api-db:
+`)
+
+	originalStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stderr = writer
+	app, err := compose.LoadCanonicalYAML(input)
+	os.Stderr = originalStderr
+	if closeErr := writer.Close(); closeErr != nil {
+		t.Fatalf("close stderr writer: %v", closeErr)
+	}
+	warning, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatalf("read stderr: %v", readErr)
+	}
+	if closeErr := reader.Close(); closeErr != nil {
+		t.Fatalf("close stderr reader: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("expected external network to warn without stopping conversion, got %v", err)
+	}
+	for _, want := range []string{
+		`external Compose network "ui-api" treated as package-local`,
+		"declare access to external workloads with x-uds.network.allow",
+	} {
+		if !strings.Contains(string(warning), want) {
+			t.Fatalf("expected external network warning to contain %q, got %q", want, warning)
+		}
+	}
+	memberships := map[string]string{}
+	for _, svc := range app.Services {
+		memberships[svc.Name] = strings.Join(svc.Networks, ",")
+	}
+	for service, want := range map[string]string{
+		"ui":  "ui-api",
+		"api": "api-db,ui-api",
+		"db":  "api-db",
+	} {
+		if got := memberships[service]; got != want {
+			t.Fatalf("expected %s networks %q, got %q", service, want, got)
+		}
 	}
 }
 

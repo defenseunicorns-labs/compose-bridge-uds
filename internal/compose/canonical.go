@@ -661,7 +661,7 @@ func normalizeTopLevelVolumes(raw types.Volumes) (map[string]model.Volume, map[s
 func normalizeTopLevelNetworks(raw types.Networks) (map[string]string, error) {
 	aliases := map[string]string{}
 	seen := map[string]struct{}{}
-	for key := range raw {
+	for key, network := range raw {
 		normalized, err := normalizeName(key)
 		if err != nil {
 			return nil, fmt.Errorf("invalid top-level network name %q: %w", key, err)
@@ -672,6 +672,9 @@ func normalizeTopLevelNetworks(raw types.Networks) (map[string]string, error) {
 		seen[normalized] = struct{}{}
 		registerAlias(aliases, key, normalized)
 		registerAlias(aliases, normalized, normalized)
+		if bool(network.External) {
+			fmt.Fprintf(os.Stderr, "warning: external Compose network %q treated as package-local; declare access to external workloads with x-uds.network.allow\n", key)
+		}
 	}
 	return aliases, nil
 }
