@@ -145,7 +145,6 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 		}
 	}
 
-	issues = append(issues, validateNetworkTopology(project)...)
 	for name, network := range project.Networks {
 		if network.Driver != "" || len(network.DriverOpts) > 0 || network.Internal || network.Attachable || len(network.Ipam.Config) > 0 || network.Ipam.Driver != "" {
 			issues = append(issues, CompatibilityIssue{
@@ -166,25 +165,4 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 		return issues[i].Path < issues[j].Path
 	})
 	return &CompatibilityError{Issues: issues}
-}
-
-func validateNetworkTopology(project types.Project) []CompatibilityIssue {
-	sets := map[string]struct{}{}
-	for _, service := range project.Services {
-		networks := make([]string, 0, len(service.Networks))
-		for name := range service.Networks {
-			networks = append(networks, name)
-		}
-		sort.Strings(networks)
-		sets[strings.Join(networks, ",")] = struct{}{}
-	}
-	if len(sets) <= 1 {
-		return nil
-	}
-	return []CompatibilityIssue{{
-		Code:        "network-topology",
-		Path:        "services.*.networks",
-		Message:     "services use different Compose network memberships, which would be flattened inside the package namespace",
-		Remediation: "use one shared Compose network or wait for network-isolation support",
-	}}
 }

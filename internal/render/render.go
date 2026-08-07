@@ -26,7 +26,8 @@ const (
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
-	secretValuePlaceholder = "__HELM_SECRET_VALUE__"
+	secretValuePlaceholder    = "__HELM_SECRET_VALUE__"
+	composeNetworkLabelPrefix = "compose.bridge.uds.dev/"
 )
 
 func WritePackage(root string, app model.App) error {
@@ -39,6 +40,7 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	secretVariables := buildSecretVariables(app.Secrets)
+	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
 		if len(svc.Ports) > 0 {
@@ -118,7 +120,7 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	for _, svc := range app.Services {
-		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts)
+		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts, preserveNetworkMembership)
 		if err != nil {
 			return err
 		}
@@ -276,7 +278,7 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 	return nil
 }
 
-func buildDeployment(appName string, namespace string, svc model.Service, servicePorts map[string]int) (deploymentManifest, error) {
+func buildDeployment(appName string, namespace string, svc model.Service, servicePorts map[string]int, preserveNetworkMembership bool) (deploymentManifest, error) {
 	ports := svc.Ports
 	volumes, volumeMounts := buildVolumes(svc)
 	resources := buildResources(svc.Resources)
@@ -297,6 +299,13 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 		SecurityContext: securityContext,
 	}
 
+	podLabels := serviceSelector(svc.Name)
+	if preserveNetworkMembership {
+		for key, value := range composeNetworkLabels(svc.Networks) {
+			podLabels[key] = value
+		}
+	}
+
 	manifest := deploymentManifest{
 		APIVersion: "apps/v1",
 		Kind:       "Deployment",
@@ -309,7 +318,7 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 			Replicas: 1,
 			Selector: labelSelector{MatchLabels: serviceSelector(svc.Name)},
 			Template: podTemplateSpec{
-				Metadata: objectMeta{Labels: serviceSelector(svc.Name)},
+				Metadata: objectMeta{Labels: podLabels},
 				Spec: podSpec{
 					Hostname:       svc.Hostname,
 					InitContainers: initContainers,
@@ -347,10 +356,7 @@ func buildService(appName string, namespace string, svc model.Service) serviceMa
 
 func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 	// --- Allow rules ---
-	allow := []map[string]any{
-		{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
-		{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
-	}
+	allow := buildNetworkAllowRules(app)
 	for _, rule := range app.Package.AdditionalAllow {
 		if item, ok := rule.(map[string]any); ok {
 			allow = append(allow, item)
@@ -398,6 +404,66 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 		},
 		Spec: spec,
 	}, nil
+}
+
+func buildNetworkAllowRules(app model.App) []map[string]any {
+	if !hasDistinctNetworkMemberships(app.Services) {
+		return []map[string]any{
+			{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
+			{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
+		}
+	}
+
+	var allow []map[string]any
+	for _, network := range sortedServiceNetworks(app.Services) {
+		labelKey := composeNetworkLabelPrefix + network
+		for _, direction := range []string{"Ingress", "Egress"} {
+			allow = append(allow, map[string]any{
+				"description":     fmt.Sprintf("compose-%s-%s", network, strings.ToLower(direction)),
+				"direction":       direction,
+				"selector":        map[string]string{labelKey: "true"},
+				"remoteNamespace": app.Package.Namespace,
+				"remoteSelector":  map[string]string{labelKey: "true"},
+			})
+		}
+	}
+	return allow
+}
+
+func hasDistinctNetworkMemberships(services []model.Service) bool {
+	if len(services) < 2 {
+		return false
+	}
+	first := strings.Join(services[0].Networks, ",")
+	for _, svc := range services[1:] {
+		if strings.Join(svc.Networks, ",") != first {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedServiceNetworks(services []model.Service) []string {
+	seen := map[string]struct{}{}
+	for _, svc := range services {
+		for _, network := range svc.Networks {
+			seen[network] = struct{}{}
+		}
+	}
+	networks := make([]string, 0, len(seen))
+	for network := range seen {
+		networks = append(networks, network)
+	}
+	sort.Strings(networks)
+	return networks
+}
+
+func composeNetworkLabels(networks []string) map[string]string {
+	labels := make(map[string]string, len(networks))
+	for _, network := range networks {
+		labels[composeNetworkLabelPrefix+network] = "true"
+	}
+	return labels
 }
 
 // buildServiceIndex creates a map from service name to Service for O(1) lookup.
