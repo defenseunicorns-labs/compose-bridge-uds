@@ -53,8 +53,9 @@ docker compose -f compose.yaml -f compose.dev.yaml down
 ```
 
 That command preserves the database volume. Add `--volumes` when the local
-messages should also be deleted. `postgres-password.dev.txt` contains only the
-fixed local development password; it is not used as the deployed password.
+messages should also be deleted. `postgres-username.dev.txt` and
+`postgres-password.dev.txt` contain only fixed local development credentials;
+they are not used as the deployed credentials.
 
 ## Build, deploy, and clean
 
@@ -94,9 +95,12 @@ initialized PostgreSQL service reachable as `db` in the application namespace:
 ./scripts/deploy.sh
 ```
 
-Deployment does not build or clean anything. It prompts for the PostgreSQL
-password because the API still consumes the shared Compose secret. This phase
-does not yet provide the development bundle or deploy-time database host
+Deployment does not build or clean anything. Supply the name and key of the
+existing Kubernetes Secret behind each shared Compose secret through Zarf
+configuration or `--set-variables` arguments. These infrastructure references
+do not prompt interactively. Both names can point to one Postgres-operator
+credential Secret, with keys such as `username` and `password`. This phase does
+not yet provide the development bundle or deploy-time database host
 configuration; package creation and inspection are the supported end-to-end
 workflow until those follow-on phases are complete.
 
@@ -209,9 +213,19 @@ messages table is defined as an inline Compose config mounted into
 when initializing an empty volume. This keeps the first database pass small;
 schema changes against existing data will require a migration workflow later.
 
-PostgreSQL and FastAPI mount the same `postgres-password` Compose secret. Local
-Compose reads the development-only file. Because FastAPI is included, the
-shared secret remains a sensitive Zarf variable and Kubernetes Secret. The
+PostgreSQL and FastAPI mount the same `postgres-username` and
+`postgres-password` Compose secrets. Local Compose reads the development-only
+files. Because each secret crosses from the included FastAPI service to the
+excluded PostgreSQL service, the bridge treats both as package-external. The
+package contains no credential values and creates no credential Secret.
+
+At deployment, `POSTGRES_USERNAME_SECRET_NAME` and
+`POSTGRES_PASSWORD_SECRET_NAME` identify existing Kubernetes Secrets in the
+application namespace. Their corresponding `_SECRET_KEY` variables select the
+entries to mount. Both names may identify one operator-created Secret while the
+keys select `username` and `password`. Kubernetes projects those entries into
+`/run/secrets/postgres-username` and `/run/secrets/postgres-password`; FastAPI
+receives only the file paths and reads them with normal file I/O. The
 database-only volume and initialization config are excluded from the package.
 
 ## Inspect the package
@@ -225,15 +239,16 @@ been discarded:
 ```
 
 The report includes the package definition, bundled images, packaged chart
-values files, and rendered Kubernetes/UDS manifests. Inspection substitutes the
-obvious placeholder `INSPECTION_ONLY` for the database password so it remains
-non-interactive and never needs the deployment credential.
+values files, and rendered Kubernetes/UDS manifests. Inspection substitutes an
+obvious `inspection-only` Secret name plus `username` and `password` keys so it
+remains non-interactive and never needs deployment credentials. The rendered
+Deployment shows exactly how those external references become mounted files.
 
 ## Directory ownership
 
 - `compose.yaml` and `compose.bridge.yaml` are the conversion source.
 - `scripts/` contains the focused build, deploy, clean, and inspect commands.
-- `postgres-password.dev.txt` is the non-secret local Compose password.
+- `postgres-username.dev.txt` and `postgres-password.dev.txt` are non-secret local Compose credentials.
 - `api/` contains the FastAPI service, API tests, and its non-root image build.
 - `ui/` contains the React and NGINX source used to build the image.
 - `out/` is disposable Compose Bridge output.

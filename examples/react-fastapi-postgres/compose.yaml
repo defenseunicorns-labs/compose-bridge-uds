@@ -10,9 +10,10 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DB: messages
-      POSTGRES_USER: messages
+      POSTGRES_USER_FILE: /run/secrets/postgres-username
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
     secrets:
+      - postgres-username
       - postgres-password
     depends_on:
       db:
@@ -37,9 +38,10 @@ services:
     user: "999"
     environment:
       POSTGRES_DB: messages
-      POSTGRES_USER: messages
+      POSTGRES_USER_FILE: /run/secrets/postgres-username
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
     secrets:
+      - postgres-username
       - postgres-password
     configs:
       - source: messages-schema
@@ -80,8 +82,11 @@ volumes:
   postgres-data: {}
 
 secrets:
+  postgres-username:
+    # Development-only value for local Compose. The deployed file comes from an external Secret.
+    file: ./postgres-username.dev.txt
   postgres-password:
-    # Development-only value for local Compose. Zarf prompts for the deployed value.
+    # Development-only value for local Compose. The deployed file comes from an external Secret.
     file: ./postgres-password.dev.txt
 
 configs:

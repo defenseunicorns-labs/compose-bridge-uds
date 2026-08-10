@@ -14,6 +14,12 @@ class DatabaseUnavailableError(Exception):
 
 
 def connection_parameters() -> dict[str, Any]:
+    username_file = Path(
+        os.getenv(
+            "POSTGRES_USER_FILE",
+            "/run/secrets/postgres-username",
+        )
+    )
     password_file = Path(
         os.getenv(
             "POSTGRES_PASSWORD_FILE",
@@ -24,7 +30,7 @@ def connection_parameters() -> dict[str, Any]:
         "host": os.getenv("POSTGRES_HOST", "db"),
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
         "dbname": os.getenv("POSTGRES_DB", "messages"),
-        "user": os.getenv("POSTGRES_USER", "messages"),
+        "user": username_file.read_text().strip(),
         "password": password_file.read_text().strip(),
         "connect_timeout": 5,
         "row_factory": dict_row,

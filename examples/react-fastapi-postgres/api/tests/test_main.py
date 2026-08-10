@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -42,6 +43,23 @@ async def post(
         base_url="http://testserver",
     ) as client:
         return await client.post(path, json=json, headers=headers)
+
+
+def test_connection_parameters_read_credential_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    username_file = tmp_path / "postgres-username"
+    password_file = tmp_path / "postgres-password"
+    username_file.write_text("messages-user\n")
+    password_file.write_text("database-password\n")
+    monkeypatch.setenv("POSTGRES_USER_FILE", str(username_file))
+    monkeypatch.setenv("POSTGRES_PASSWORD_FILE", str(password_file))
+
+    parameters = database.connection_parameters()
+
+    assert parameters["user"] == "messages-user"
+    assert parameters["password"] == "database-password"
 
 
 @pytest.mark.anyio

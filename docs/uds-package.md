@@ -4,7 +4,7 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 
 When Compose services declare `build:`, the bridge also writes `out/build.compose.yaml`. Zarf's generated `onCreate` action uses that file with Buildx Bake, grants read access to the canonical local build inputs, creates OCI layouts under `out/image-archives/`, and includes them through the component's `imageArchives`. These files are temporary package-creation workspace; the Zarf package archive is the distributable result.
 
-Secrets are rendered from chart values rather than baked into templates. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders, references it through `charts[].valuesFiles`, and retains the prompt and sensitivity settings in the Zarf package's `variables:`.
+Package-owned secrets are rendered from chart values rather than baked into templates. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders, references it through `charts[].valuesFiles`, and retains the prompt and sensitivity settings in the Zarf package's `variables:`. Package-external secrets carry only non-sensitive Kubernetes Secret name/key variables; their values are not included and their Secret objects are not created by the chart.
 
 ## Inferred behavior
 
