@@ -21,7 +21,7 @@ const (
 	chartDirName = "chart"
 	// zarfValuesRel is the Zarf-templated values file (relative to the package
 	// root) referenced by the component's chart valuesFiles. Only written when
-	// the package has secrets.
+	// the package has deploy-time values.
 	zarfValuesRel = "values/values.yaml"
 	// buildComposeRel is the temporary Compose build definition consumed by
 	// Buildx Bake during Zarf package creation.
@@ -36,6 +36,12 @@ const (
 )
 
 func WritePackage(root string, app model.App) error {
+	secretVariables := buildSecretVariables(app.Secrets)
+	environmentVariables, err := buildEnvironmentVariables(app, secretVariables)
+	if err != nil {
+		return err
+	}
+
 	chartDir := filepath.Join(root, chartDirName)
 	templatesDir := filepath.Join(chartDir, "templates")
 	for _, dir := range []string{root, chartDir, templatesDir} {
@@ -44,7 +50,6 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	secretVariables := buildSecretVariables(app.Secrets)
 	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
@@ -107,6 +112,19 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
+	for _, svc := range app.Services {
+		if len(svc.Env) == 0 {
+			continue
+		}
+		if err := writeEnvironmentConfigMapTemplate(
+			filepath.Join(templatesDir, fmt.Sprintf("configmap-%s-environment.yaml", svc.Name)),
+			app,
+			svc,
+		); err != nil {
+			return err
+		}
+	}
+
 	// Package-owned secrets are rendered by Helm from sensitive Zarf values.
 	// External secrets are deliberately not created by this chart; deployments
 	// reference the existing Kubernetes Secret selected through name/key values.
@@ -122,7 +140,15 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	for _, svc := range app.Services {
-		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts, app.Secrets, secretVariables)
+		deployment, err := buildDeployment(
+			app.Package.Name,
+			app.Package.Namespace,
+			svc,
+			servicePorts,
+			app.Secrets,
+			secretVariables,
+			preserveNetworkMembership,
+		)
 		if err != nil {
 			return err
 		}
@@ -151,17 +177,17 @@ func WritePackage(root string, app model.App) error {
 	if err := writeChartMetadata(filepath.Join(chartDir, "Chart.yaml"), app); err != nil {
 		return err
 	}
-	if err := writeChartValues(filepath.Join(chartDir, "values.yaml"), app.Secrets, secretVariables, false); err != nil {
+	if err := writeChartValues(filepath.Join(chartDir, "values.yaml"), app, secretVariables, environmentVariables, false); err != nil {
 		return err
 	}
 
-	hasSecrets := len(app.Secrets) > 0
-	if hasSecrets {
+	hasDeployValues := len(app.Secrets) > 0 || len(environmentVariables) > 0
+	if hasDeployValues {
 		valuesPath := filepath.Join(root, filepath.FromSlash(zarfValuesRel))
 		if err := os.MkdirAll(filepath.Dir(valuesPath), 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", filepath.Dir(valuesPath), err)
 		}
-		if err := writeChartValues(valuesPath, app.Secrets, secretVariables, true); err != nil {
+		if err := writeChartValues(valuesPath, app, secretVariables, environmentVariables, true); err != nil {
 			return err
 		}
 	}
@@ -182,7 +208,7 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, dedupeStrings(images), hasSecrets); err != nil {
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, dedupeStrings(images), hasDeployValues); err != nil {
 		return err
 	}
 
@@ -337,6 +363,49 @@ func writeSecretTemplate(path string, app model.App, secret model.Secret, variab
 	return nil
 }
 
+// writeEnvironmentConfigMapTemplate writes one observable configuration object
+// per service. Helm supplies each value, and the UDS pod-reload label causes the
+// consuming workload to roll when deploy-time configuration changes.
+func writeEnvironmentConfigMapTemplate(path string, app model.App, svc model.Service) error {
+	labels := appLabels(app.Package.Name, svc.Name)
+	labels["uds.dev/pod-reload"] = "true"
+
+	data := make(map[string]string, len(svc.Env))
+	placeholders := make(map[string]string, len(svc.Env))
+	for i, item := range svc.Env {
+		placeholder := fmt.Sprintf("__HELM_ENVIRONMENT_VALUE_%d__", i)
+		data[item.Name] = placeholder
+		placeholders[placeholder] = fmt.Sprintf(
+			"{{ index .Values.environment %q %q | quote }}",
+			svc.Name,
+			item.Name,
+		)
+	}
+
+	manifest := configMapManifest{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Metadata: objectMeta{
+			Name:      environmentConfigMapName(svc.Name),
+			Namespace: app.Package.Namespace,
+			Labels:    labels,
+		},
+		Data: data,
+	}
+	marshaled, err := yamlv3.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+	rendered := string(marshaled)
+	for placeholder, helmValue := range placeholders {
+		rendered = strings.ReplaceAll(rendered, placeholder, helmValue)
+	}
+	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
+	}
+	return nil
+}
+
 // writeChartMetadata writes the generated chart's Chart.yaml.
 func writeChartMetadata(path string, app model.App) error {
 	return writeYAMLFile(path, chartMetadata{
@@ -349,16 +418,37 @@ func writeChartMetadata(path string, app model.App) error {
 	})
 }
 
-// writeChartValues writes package-owned secret values and external Secret
-// references either as chart defaults or as Zarf variable placeholders.
-func writeChartValues(path string, secrets map[string]model.Secret, variables map[string]secretVariableNames, placeholder bool) error {
+// writeChartValues writes service environment, package-owned secret values, and
+// external Secret references either as chart defaults or as Zarf placeholders.
+func writeChartValues(
+	path string,
+	app model.App,
+	secretVariables map[string]secretVariableNames,
+	environmentVariables map[string]map[string]string,
+	placeholder bool,
+) error {
 	values := chartValues{
+		Environment:     map[string]map[string]string{},
 		Secrets:         map[string]string{},
 		ExternalSecrets: map[string]externalSecretValues{},
 	}
-	for _, name := range sortedSecretNames(secrets) {
-		secret := secrets[name]
-		variable := variables[name]
+	for _, svc := range app.Services {
+		if len(svc.Env) == 0 {
+			continue
+		}
+		serviceValues := make(map[string]string, len(svc.Env))
+		for _, item := range svc.Env {
+			value := item.Value
+			if placeholder {
+				value = fmt.Sprintf("###ZARF_VAR_%s###", environmentVariables[svc.Name][item.Name])
+			}
+			serviceValues[item.Name] = value
+		}
+		values.Environment[svc.Name] = serviceValues
+	}
+	for _, name := range sortedSecretNames(app.Secrets) {
+		secret := app.Secrets[name]
+		variable := secretVariables[name]
 		if secret.External {
 			external := externalSecretValues{Key: secret.Name}
 			if placeholder {
@@ -377,7 +467,14 @@ func writeChartValues(path string, secrets map[string]model.Secret, variables ma
 	return writeYAMLFile(path, values)
 }
 
-func writeZarfConfig(path string, app model.App, secretVariables map[string]secretVariableNames, images []string, hasSecrets bool) error {
+func writeZarfConfig(
+	path string,
+	app model.App,
+	secretVariables map[string]secretVariableNames,
+	environmentVariables map[string]map[string]string,
+	images []string,
+	hasDeployValues bool,
+) error {
 	variables := []zarfVariable{}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[secretName]
@@ -391,7 +488,7 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]secr
 				zarfVariable{
 					Name:        variable.SecretKey,
 					Description: fmt.Sprintf("Key in the Kubernetes Secret for external compose secret %s", secretName),
-					Default:     secret.Name,
+					Default:     stringPointer(secret.Name),
 				},
 			)
 			continue
@@ -402,6 +499,15 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]secr
 			Prompt:      true,
 			Sensitive:   true,
 		})
+	}
+	for _, svc := range app.Services {
+		for _, item := range svc.Env {
+			variables = append(variables, zarfVariable{
+				Name:        environmentVariables[svc.Name][item.Name],
+				Description: fmt.Sprintf("Value for %s environment variable on compose service %s", item.Name, svc.Name),
+				Default:     stringPointer(item.Value),
+			})
+		}
 	}
 
 	pkg := zarfPackageConfig{
@@ -421,7 +527,7 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]secr
 		LocalPath: chartDirName,
 		Version:   app.Package.Version,
 	}
-	if hasSecrets {
+	if hasDeployValues {
 		chart.ValuesFiles = []string{zarfValuesRel}
 	}
 	component := zarfComponent{
@@ -461,6 +567,7 @@ func buildDeployment(
 	servicePorts map[string]int,
 	secrets map[string]model.Secret,
 	secretVariables map[string]secretVariableNames,
+	preserveNetworkMembership bool,
 ) (deploymentManifest, error) {
 	ports := svc.Ports
 	volumes, volumeMounts := buildVolumes(svc, secrets, secretVariables)
@@ -475,7 +582,7 @@ func buildDeployment(
 		Command:         svc.Command,
 		Args:            svc.Args,
 		Stdin:           svc.Stdin,
-		Env:             buildEnv(svc.Env),
+		EnvFrom:         buildEnvFrom(svc),
 		Ports:           buildContainerPorts(ports),
 		VolumeMounts:    volumeMounts,
 		LivenessProbe:   buildProbe(svc.Healthcheck),
@@ -1183,15 +1290,13 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 	return containers
 }
 
-func buildEnv(env []model.EnvVar) []envVar {
-	if len(env) == 0 {
+func buildEnvFrom(svc model.Service) []envFromSource {
+	if len(svc.Env) == 0 {
 		return nil
 	}
-	out := make([]envVar, 0, len(env))
-	for _, item := range env {
-		out = append(out, envVar{Name: item.Name, Value: item.Value})
-	}
-	return out
+	return []envFromSource{{
+		ConfigMapRef: &configMapEnvSource{Name: environmentConfigMapName(svc.Name)},
+	}}
 }
 
 func buildContainerPorts(ports []model.Port) []containerPort {
@@ -1406,6 +1511,70 @@ type secretVariableNames struct {
 	SecretKey  string
 }
 
+func buildEnvironmentVariables(
+	app model.App,
+	secretVariables map[string]secretVariableNames,
+) (map[string]map[string]string, error) {
+	usedVariables := map[string]string{}
+	for _, secretName := range sortedSecretNames(app.Secrets) {
+		variable := secretVariables[secretName]
+		for _, name := range []string{variable.Value, variable.SecretName, variable.SecretKey} {
+			if name != "" {
+				usedVariables[name] = fmt.Sprintf("compose secret %q", secretName)
+			}
+		}
+	}
+
+	renderedConfigMaps := map[string]string{}
+	for _, configName := range sortedConfigNames(app.Configs) {
+		if !app.Configs[configName].External {
+			renderedConfigMaps[configName] = configName
+		}
+	}
+
+	out := map[string]map[string]string{}
+	for _, svc := range app.Services {
+		if len(svc.Env) == 0 {
+			continue
+		}
+		configMapName := environmentConfigMapName(svc.Name)
+		if composeConfig, exists := renderedConfigMaps[configMapName]; exists {
+			return nil, fmt.Errorf(
+				"environment ConfigMap %q for service %q conflicts with compose config %q",
+				configMapName,
+				svc.Name,
+				composeConfig,
+			)
+		}
+
+		serviceVariables := map[string]string{}
+		for _, item := range svc.Env {
+			if !portableEnvironmentName.MatchString(item.Name) {
+				return nil, fmt.Errorf(
+					"invalid environment variable %q on service %q: names used with generated envFrom ConfigMaps must match %s",
+					item.Name,
+					svc.Name,
+					portableEnvironmentName.String(),
+				)
+			}
+			variableName := normalizeZarfVariableName(svc.Name + "_" + item.Name)
+			if existing, exists := usedVariables[variableName]; exists {
+				return nil, fmt.Errorf(
+					"environment variable %q on service %q generates Zarf variable %q, which conflicts with %s",
+					item.Name,
+					svc.Name,
+					variableName,
+					existing,
+				)
+			}
+			usedVariables[variableName] = fmt.Sprintf("environment variable %q on service %q", item.Name, svc.Name)
+			serviceVariables[item.Name] = variableName
+		}
+		out[svc.Name] = serviceVariables
+	}
+	return out, nil
+}
+
 func buildSecretVariables(secrets map[string]model.Secret) map[string]secretVariableNames {
 	usedValuesKeys := map[string]struct{}{}
 	usedVariables := map[string]struct{}{}
@@ -1429,14 +1598,7 @@ func buildSecretVariables(secrets map[string]model.Secret) map[string]secretVari
 }
 
 func buildSecretVariableName(secretName string, used map[string]struct{}) string {
-	base := strings.ToUpper(strings.TrimSpace(secretName))
-	base = strings.ReplaceAll(base, "-", "_")
-	base = strings.ReplaceAll(base, ".", "_")
-	base = invalidSecretVariableRunes.ReplaceAllString(base, "_")
-	base = strings.Trim(base, "_")
-	if base == "" {
-		base = "VALUE"
-	}
+	base := normalizeZarfVariableName(secretName)
 	candidate := base
 	for i := 2; ; i++ {
 		if _, exists := used[candidate]; !exists {
@@ -1445,6 +1607,22 @@ func buildSecretVariableName(secretName string, used map[string]struct{}) string
 		}
 		candidate = fmt.Sprintf("%s_%d", base, i)
 	}
+}
+
+func normalizeZarfVariableName(raw string) string {
+	name := strings.ToUpper(strings.TrimSpace(raw))
+	name = strings.ReplaceAll(name, "-", "_")
+	name = strings.ReplaceAll(name, ".", "_")
+	name = invalidZarfVariableRunes.ReplaceAllString(name, "_")
+	name = strings.Trim(name, "_")
+	if name == "" {
+		return "VALUE"
+	}
+	return name
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func buildPortName(port model.Port) string {
@@ -1561,7 +1739,8 @@ var invalidManifestNameRunes = regexp.MustCompile(`[^a-z0-9.-]+`)
 var invalidPortNameRunes = regexp.MustCompile(`[^a-z0-9-]+`)
 var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
 var portNameLetter = regexp.MustCompile(`[a-z]`)
-var invalidSecretVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
+var invalidZarfVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
+var portableEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func sanitizeManifestName(raw string) string {
 	name := strings.ToLower(strings.TrimSpace(raw))
@@ -1572,6 +1751,10 @@ func sanitizeManifestName(raw string) string {
 		return "resource"
 	}
 	return name
+}
+
+func environmentConfigMapName(serviceName string) string {
+	return sanitizeManifestName(serviceName + "-environment")
 }
 
 type objectMeta struct {
@@ -1657,7 +1840,7 @@ type containerSpec struct {
 	Command         []string              `yaml:"command,omitempty"`
 	Args            []string              `yaml:"args,omitempty"`
 	Stdin           bool                  `yaml:"stdin,omitempty"`
-	Env             []envVar              `yaml:"env,omitempty"`
+	EnvFrom         []envFromSource       `yaml:"envFrom,omitempty"`
 	Ports           []containerPort       `yaml:"ports,omitempty"`
 	VolumeMounts    []volumeMountSpec     `yaml:"volumeMounts,omitempty"`
 	LivenessProbe   *probe                `yaml:"livenessProbe,omitempty"`
@@ -1665,9 +1848,12 @@ type containerSpec struct {
 	SecurityContext *securityContext      `yaml:"securityContext,omitempty"`
 }
 
-type envVar struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value"`
+type envFromSource struct {
+	ConfigMapRef *configMapEnvSource `yaml:"configMapRef,omitempty"`
+}
+
+type configMapEnvSource struct {
+	Name string `yaml:"name"`
 }
 
 type containerPort struct {
@@ -1835,11 +2021,11 @@ type zarfMetadata struct {
 }
 
 type zarfVariable struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Default     string `yaml:"default,omitempty"`
-	Prompt      bool   `yaml:"prompt,omitempty"`
-	Sensitive   bool   `yaml:"sensitive,omitempty"`
+	Name        string  `yaml:"name"`
+	Description string  `yaml:"description,omitempty"`
+	Default     *string `yaml:"default,omitempty"`
+	Prompt      bool    `yaml:"prompt,omitempty"`
+	Sensitive   bool    `yaml:"sensitive,omitempty"`
 }
 
 type zarfComponent struct {
@@ -1902,6 +2088,7 @@ type chartMetadata struct {
 // chartValues is the values document written for both the chart defaults
 // (chart/values.yaml) and the Zarf-templated overrides (values/values.yaml).
 type chartValues struct {
+	Environment     map[string]map[string]string    `yaml:"environment,omitempty"`
 	Secrets         map[string]string               `yaml:"secrets,omitempty"`
 	ExternalSecrets map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
 }

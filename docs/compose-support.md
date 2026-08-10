@@ -9,7 +9,7 @@
 | Named `volumes:`                                                 | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default).                                                                                                                                                                                                        |
 | `secrets:`                                                       | Delivered to containers as read-only files. Secrets used only by packaged services become package-owned Kubernetes Secrets. Secrets shared with an `x-uds-exclude` service, and native external secrets, reference deployment-provided Kubernetes Secret names and keys. |
 | `configs:`                                                       | Converted to ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                              |
-| `environment:`, `env_file:`                                      | Resolved by `docker compose config` and injected as container environment variables.                                                                                                                                                                                            |
+| `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into one reloadable ConfigMap per packaged service. The Deployment imports that ConfigMap with `envFrom`.                                                                              |
 | `depends_on:`                                                    | Converted to init-container wait logic using `netcat` (busybox). The dependency must declare a port.                                                                                                                                                                            |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
 | `container_name:`                                                | Ignored with a warning. Kubernetes Service and Deployment names come from the Compose service name.                                                                                                                                                                             |
@@ -76,6 +76,28 @@ Different Compose secrets can select different keys in the same Kubernetes
 Secret. This is useful for operators that publish one credential Secret with
 keys such as `username` and `password`. Build secrets are unaffected by this
 runtime-secret behavior.
+
+## Runtime configuration
+
+Every environment variable on a packaged service becomes a non-sensitive Zarf
+variable named `<SERVICE>_<ENV_NAME>`. Its resolved Compose value is the
+default, so an unchanged package behaves like `docker compose up`, while a UDS
+bundle or day-two deployment can override the value. Variables ending in
+`_FILE` follow the same rule; their referenced Compose secrets remain mounted
+as files.
+
+The generated chart groups these values into one `<service>-environment`
+ConfigMap per service and imports it into the workload with `envFrom`. Each
+ConfigMap has the `uds.dev/pod-reload: "true"` label, allowing UDS Core to roll
+only the consuming workload when configuration changes. A service without
+environment entries does not receive an empty ConfigMap. A direct Helm install
+still consumes the ConfigMap, but without UDS Core it requires a manual workload
+restart after configuration changes.
+
+ConfigMaps are not secret storage. Put credentials and other sensitive values
+in Compose `secrets:` rather than `environment:`. Environment names must use
+the portable form `[A-Za-z_][A-Za-z0-9_]*`; conversion fails rather than
+allowing Kubernetes to silently skip a key imported through `envFrom`.
 
 ## Local Dockerfile builds
 
