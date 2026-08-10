@@ -5,12 +5,12 @@ This document records a manually performed compatibility matrix against the corp
 
 ## Perform matrix test
 
-Run the matrix script from any directory with Python 3.9+, Git, Go, and Docker
-Compose installed. It tests the current checkout and updates the Results table
-below.
+Run the matrix script from the repository root with [uv](https://docs.astral.sh/uv/),
+Git, Go, and Docker Compose installed. It tests the current checkout and updates
+the Results table below.
 
 ```bash
-python3 scripts/awesome_compose_matrix.py
+./scripts/awesome_compose_matrix.py
 ```
 
 ## Tested baseline
