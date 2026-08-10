@@ -487,15 +487,16 @@ configs:
 		"external compose secret shared-password requires a Kubernetes Secret name",
 		".Values.externalSecrets.SHARED_PASSWORD.name",
 		".Values.externalSecrets.SHARED_PASSWORD.key",
-		"mountPath: /run/secrets",
+		"mountPath: /run/secrets/shared-password",
+		"subPath: shared-password",
 		"path: shared-password",
 	} {
 		if !strings.Contains(deployment, want) {
 			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
 		}
 	}
-	if strings.Contains(deployment, "subPath:") {
-		t.Fatalf("default Compose secret path should use a projected directory mount\n%s", deployment)
+	if strings.Contains(deployment, "mountPath: /run/secrets\n") {
+		t.Fatalf("default Compose secret must not replace the service-account parent directory\n%s", deployment)
 	}
 }
 
@@ -768,7 +769,7 @@ networks:
 		}
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	allows, ok := network["allow"].([]any)
@@ -832,7 +833,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	allows, ok := network["allow"].([]any)
@@ -921,6 +922,72 @@ configs:
 	}
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageAddsDeployTimeNetworkAllow(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  network:
+    allow:
+      - direction: Egress
+        selector:
+          app.kubernetes.io/name: api
+        remoteNamespace: platform-service
+        ports:
+          - 8443
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	for _, want := range []string{
+		"remoteNamespace: platform-service",
+		"app.kubernetes.io/name: api",
+		"{{- with .Values.additionalNetworkAllow }}",
+		"{{ toYaml . | nindent 12 }}",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected UDS Package template to contain %q\n%s", want, udsPackage)
+		}
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	additionalAllow, ok := chartValues["additionalNetworkAllow"].([]any)
+	if !ok || len(additionalAllow) != 0 {
+		t.Fatalf("expected empty additionalNetworkAllow chart default, got %#v", chartValues["additionalNetworkAllow"])
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "additionalNetworkAllow:\n  ###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###") {
+		t.Fatalf("expected raw structured Zarf substitution\n%s", zarfValues)
+	}
+	if strings.Contains(zarfValues, "'###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###'") {
+		t.Fatalf("additional network allow substitution must not be quoted\n%s", zarfValues)
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"name: ADDITIONAL_NETWORK_ALLOW",
+		"default: '[]'",
+		"autoIndent: true",
+		"values/values.yaml",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
 	}
 }
 
@@ -1664,7 +1731,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	caBundle := mustMap(t, spec["caBundle"])
 	configMap := mustMap(t, caBundle["configMap"])
@@ -2089,12 +2156,15 @@ services:
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
 	}
-	// No secrets: no Zarf values file and no valuesFiles reference.
-	if _, err := os.Stat(filepath.Join(outDir, "values")); !os.IsNotExist(err) {
-		t.Fatalf("did not expect values/ directory for a package without secrets")
+	// Every package has a values file for deploy-time additional network rules.
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "additionalNetworkAllow:\n  ###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###") {
+		t.Fatalf("expected deploy-time network allow placeholder\n%s", zarfValues)
 	}
-	if strings.Contains(zarfConfig, "valuesFiles") {
-		t.Fatalf("did not expect valuesFiles for a package without secrets\n%s", zarfConfig)
+	for _, want := range []string{"name: ADDITIONAL_NETWORK_ALLOW", "default: '[]'", "autoIndent: true", "valuesFiles:"} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
 	}
 }
 
@@ -2155,14 +2225,15 @@ secrets:
 		"name: api-key",
 		"key: api-key",
 		"path: api_key",
-		"mountPath: /run/secrets",
+		"mountPath: /run/secrets/api_key",
+		"subPath: api_key",
 	} {
 		if !strings.Contains(deployment, want) {
 			t.Fatalf("expected package-owned secret file projection %q\n%s", want, deployment)
 		}
 	}
-	if strings.Contains(deployment, "subPath:") {
-		t.Fatalf("default Compose secret path should use a projected directory mount\n%s", deployment)
+	if strings.Contains(deployment, "mountPath: /run/secrets\n") {
+		t.Fatalf("default Compose secret must not replace the service-account parent directory\n%s", deployment)
 	}
 }
 
@@ -2261,8 +2332,12 @@ secrets:
 	if err := render.WritePackage(outDir, app); err != nil {
 		t.Fatalf("WritePackage() error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "values")); !os.IsNotExist(err) {
-		t.Fatalf("expected no Zarf values for excluded-only secret, stat err = %v", err)
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###") {
+		t.Fatalf("expected the default additional network allow variable\n%s", zarfValues)
+	}
+	if strings.Contains(zarfValues, "DATABASE_PASSWORD") {
+		t.Fatalf("did not expect excluded-only secret values\n%s", zarfValues)
 	}
 }
 
@@ -2432,6 +2507,26 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 			wantErr: `generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
 		},
 		{
+			name: "reserved environment variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "additional", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "NETWORK_ALLOW", Value: "custom"}},
+				}},
+			},
+			wantErr: `generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved additional network allow variable`,
+		},
+		{
+			name: "reserved secret variable collision",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Secrets:  map[string]model.Secret{"additional-network-allow": {Name: "additional-network-allow"}},
+			},
+			wantErr: `compose secret "additional-network-allow" generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved additional network allow variable`,
+		},
+		{
 			name: "compose config map collision",
 			app: model.App{
 				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
@@ -2459,7 +2554,7 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 
 func firstExposeRule(t *testing.T, path string) map[string]any {
 	t.Helper()
-	udsPackage := readYAMLMap(t, path)
+	udsPackage := readUDSPackageYAMLMap(t, path)
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	exposes, ok := network["expose"].([]any)
@@ -2467,6 +2562,25 @@ func firstExposeRule(t *testing.T, path string) map[string]any {
 		t.Fatalf("expected at least one expose rule in %s, got %#v", path, network["expose"])
 	}
 	return mustMap(t, exposes[0])
+}
+
+func readUDSPackageYAMLMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	content := readFile(t, path)
+	templateBlock := strings.Join([]string{
+		"            {{- with .Values.additionalNetworkAllow }}",
+		"            {{ toYaml . | nindent 12 }}",
+		"            {{- end }}",
+	}, "\n")
+	if !strings.Contains(content, templateBlock) {
+		t.Fatalf("expected additional network allow template in %s\n%s", path, content)
+	}
+	content = strings.Replace(content, templateBlock, "", 1)
+	var out map[string]any
+	if err := yamlv3.Unmarshal([]byte(content), &out); err != nil {
+		t.Fatalf("unmarshal Helm-stripped yaml %s: %v", path, err)
+	}
+	return out
 }
 
 func readFile(t *testing.T, path string) string {

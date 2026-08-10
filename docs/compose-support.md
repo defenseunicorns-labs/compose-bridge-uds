@@ -99,6 +99,18 @@ in Compose `secrets:` rather than `environment:`. Environment names must use
 the portable form `[A-Za-z_][A-Za-z0-9_]*`; conversion fails rather than
 allowing Kubernetes to silently skip a key imported through `envFrom`.
 
+## Deploy-time network access
+
+Every generated package exposes the non-sensitive Zarf variable
+`ADDITIONAL_NETWORK_ALLOW`, defaulting to `[]`. Its value is appended to the UDS
+Package CR's `network.allow` list, allowing a bundle or day-two deployment to
+provide environment-specific ingress or egress without modifying Compose or
+rebuilding the package.
+
+Rules under `x-uds.network.allow` remain static package defaults for invariant
+connectivity that Compose cannot express. Compose-derived and static rules are
+rendered first; `ADDITIONAL_NETWORK_ALLOW` entries are appended afterward.
+
 ## Local Dockerfile builds
 
 For services with `build:`, conversion writes `out/build.compose.yaml` and adds a Zarf `onCreate` action. Package creation runs Buildx Bake and writes one temporary OCI archive per service under `out/image-archives/`.

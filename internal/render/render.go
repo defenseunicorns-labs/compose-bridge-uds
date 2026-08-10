@@ -33,6 +33,11 @@ const (
 	// be rendered by Helm from chart values rather than a static literal.
 	secretValuePlaceholder    = "__HELM_SECRET_VALUE__"
 	composeNetworkLabelPrefix = "network.compose.bridge.uds.dev/"
+	// additionalNetworkAllowVariable is the conventional UDS package escape
+	// hatch for deploy-time network.allow entries.
+	additionalNetworkAllowVariable    = "ADDITIONAL_NETWORK_ALLOW"
+	additionalNetworkAllowPlaceholder = "__HELM_ADDITIONAL_NETWORK_ALLOW__"
+	zarfNetworkAllowPlaceholder       = "__ZARF_ADDITIONAL_NETWORK_ALLOW__"
 )
 
 func WritePackage(root string, app model.App) error {
@@ -164,7 +169,7 @@ func WritePackage(root string, app model.App) error {
 	if err != nil {
 		return err
 	}
-	if err := writeYAMLFile(filepath.Join(templatesDir, "uds-package.yaml"), udsPackage); err != nil {
+	if err := writeUDSPackageTemplate(filepath.Join(templatesDir, "uds-package.yaml"), udsPackage); err != nil {
 		return err
 	}
 
@@ -181,15 +186,12 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
-	hasDeployValues := len(app.Secrets) > 0 || len(environmentVariables) > 0
-	if hasDeployValues {
-		valuesPath := filepath.Join(root, filepath.FromSlash(zarfValuesRel))
-		if err := os.MkdirAll(filepath.Dir(valuesPath), 0o755); err != nil {
-			return fmt.Errorf("create directory %s: %w", filepath.Dir(valuesPath), err)
-		}
-		if err := writeChartValues(valuesPath, app, secretVariables, environmentVariables, true); err != nil {
-			return err
-		}
+	valuesPath := filepath.Join(root, filepath.FromSlash(zarfValuesRel))
+	if err := os.MkdirAll(filepath.Dir(valuesPath), 0o755); err != nil {
+		return fmt.Errorf("create directory %s: %w", filepath.Dir(valuesPath), err)
+	}
+	if err := writeChartValues(valuesPath, app, secretVariables, environmentVariables, true); err != nil {
+		return err
 	}
 
 	if hasBuildServices(app) {
@@ -208,7 +210,7 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, dedupeStrings(images), hasDeployValues); err != nil {
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, dedupeStrings(images)); err != nil {
 		return err
 	}
 
@@ -406,6 +408,31 @@ func writeEnvironmentConfigMapTemplate(path string, app model.App, svc model.Ser
 	return nil
 }
 
+// writeUDSPackageTemplate preserves the statically generated Package CR and
+// appends the conventional deploy-time additionalNetworkAllow Helm value.
+func writeUDSPackageTemplate(path string, manifest udsPackageManifest) error {
+	manifest.Spec.Network.Allow = append(manifest.Spec.Network.Allow, additionalNetworkAllowPlaceholder)
+	marshaled, err := yamlv3.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+
+	placeholderLine := "            - " + additionalNetworkAllowPlaceholder
+	templateBlock := strings.Join([]string{
+		"            {{- with .Values.additionalNetworkAllow }}",
+		"            {{ toYaml . | nindent 12 }}",
+		"            {{- end }}",
+	}, "\n")
+	rendered := strings.Replace(string(marshaled), placeholderLine, templateBlock, 1)
+	if rendered == string(marshaled) {
+		return fmt.Errorf("render additional network allow template in %s: placeholder not found", path)
+	}
+	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
+	}
+	return nil
+}
+
 // writeChartMetadata writes the generated chart's Chart.yaml.
 func writeChartMetadata(path string, app model.App) error {
 	return writeYAMLFile(path, chartMetadata{
@@ -428,9 +455,13 @@ func writeChartValues(
 	placeholder bool,
 ) error {
 	values := chartValues{
-		Environment:     map[string]map[string]string{},
-		Secrets:         map[string]string{},
-		ExternalSecrets: map[string]externalSecretValues{},
+		AdditionalNetworkAllow: []any{},
+		Environment:            map[string]map[string]string{},
+		Secrets:                map[string]string{},
+		ExternalSecrets:        map[string]externalSecretValues{},
+	}
+	if placeholder {
+		values.AdditionalNetworkAllow = zarfNetworkAllowPlaceholder
 	}
 	for _, svc := range app.Services {
 		if len(svc.Env) == 0 {
@@ -464,7 +495,23 @@ func writeChartValues(
 			values.Secrets[variable.Value] = ""
 		}
 	}
-	return writeYAMLFile(path, values)
+	marshaled, err := yamlv3.Marshal(values)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+	rendered := string(marshaled)
+	if placeholder {
+		placeholderLine := "additionalNetworkAllow: " + zarfNetworkAllowPlaceholder
+		variableBlock := "additionalNetworkAllow:\n  ###ZARF_VAR_" + additionalNetworkAllowVariable + "###"
+		rendered = strings.Replace(rendered, placeholderLine, variableBlock, 1)
+		if rendered == string(marshaled) {
+			return fmt.Errorf("render additional network allow Zarf variable in %s: placeholder not found", path)
+		}
+	}
+	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
+	}
+	return nil
 }
 
 func writeZarfConfig(
@@ -473,9 +520,13 @@ func writeZarfConfig(
 	secretVariables map[string]secretVariableNames,
 	environmentVariables map[string]map[string]string,
 	images []string,
-	hasDeployValues bool,
 ) error {
-	variables := []zarfVariable{}
+	variables := []zarfVariable{{
+		Name:        additionalNetworkAllowVariable,
+		Description: "Additional network allow rules for unanticipated scenarios (YAML array format)",
+		Default:     stringPointer("[]"),
+		AutoIndent:  true,
+	}}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[secretName]
 		variable := secretVariables[secretName]
@@ -527,9 +578,7 @@ func writeZarfConfig(
 		LocalPath: chartDirName,
 		Version:   app.Package.Version,
 	}
-	if hasDeployValues {
-		chart.ValuesFiles = []string{zarfValuesRel}
-	}
+	chart.ValuesFiles = []string{zarfValuesRel}
 	component := zarfComponent{
 		Name:        app.Package.Name,
 		Required:    true,
@@ -700,15 +749,15 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 	}, nil
 }
 
-func buildNetworkAllowRules(app model.App) []map[string]any {
+func buildNetworkAllowRules(app model.App) []any {
 	if !hasDistinctNetworkMemberships(app.Services) {
-		return []map[string]any{
-			{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
-			{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
+		return []any{
+			map[string]any{"direction": "Ingress", "remoteGenerated": "IntraNamespace"},
+			map[string]any{"direction": "Egress", "remoteGenerated": "IntraNamespace"},
 		}
 	}
 
-	var allow []map[string]any
+	var allow []any
 	for _, network := range sortedServiceNetworks(app.Services) {
 		labelKey := composeNetworkLabelPrefix + network
 		for _, direction := range []string{"Ingress", "Egress"} {
@@ -1165,15 +1214,22 @@ func buildVolumes(svc model.Service, secrets map[string]model.Secret, secretVari
 		})
 	}
 
-	// Compose's default secret location is a directory of read-only files. Keep
-	// that shape in Kubernetes with one projected volume, allowing applications
-	// to use ordinary file I/O and allowing mounted Secret updates to propagate.
+	// Keep Compose secrets at their exact file paths. Mounting a projected volume
+	// over /run/secrets would also cover Kubernetes' service-account path on
+	// images where /var/run points to /run, preventing the container from starting.
+	projectedVolumeName := sanitizeManifestName("compose-secrets")
 	projectedSources := []volumeProjection{}
 	for _, ref := range svc.Secrets {
 		target := resolveSecretTargetPath(ref.Source, ref.Target)
 		if relativeTarget, ok := secretRunPath(target); ok {
 			projectedSources = append(projectedSources, volumeProjection{
 				Secret: buildSecretProjection(ref.Source, relativeTarget, secrets, secretVariables),
+			})
+			mounts = append(mounts, volumeMountSpec{
+				Name:      projectedVolumeName,
+				MountPath: target,
+				SubPath:   relativeTarget,
+				ReadOnly:  true,
 			})
 			continue
 		}
@@ -1197,15 +1253,9 @@ func buildVolumes(svc model.Service, secrets map[string]model.Secret, secretVari
 		})
 	}
 	if len(projectedSources) > 0 {
-		volumeName := sanitizeManifestName("compose-secrets")
 		volumes = append(volumes, volumeSpec{
-			Name:      volumeName,
+			Name:      projectedVolumeName,
 			Projected: &projectedVolumeSource{Sources: projectedSources},
-		})
-		mounts = append(mounts, volumeMountSpec{
-			Name:      volumeName,
-			MountPath: "/run/secrets",
-			ReadOnly:  true,
 		})
 	}
 
@@ -1515,11 +1565,21 @@ func buildEnvironmentVariables(
 	app model.App,
 	secretVariables map[string]secretVariableNames,
 ) (map[string]map[string]string, error) {
-	usedVariables := map[string]string{}
+	usedVariables := map[string]string{
+		additionalNetworkAllowVariable: "reserved additional network allow variable",
+	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variable := secretVariables[secretName]
 		for _, name := range []string{variable.Value, variable.SecretName, variable.SecretKey} {
 			if name != "" {
+				if existing, exists := usedVariables[name]; exists {
+					return nil, fmt.Errorf(
+						"compose secret %q generates Zarf variable %q, which conflicts with %s",
+						secretName,
+						name,
+						existing,
+					)
+				}
 				usedVariables[name] = fmt.Sprintf("compose secret %q", secretName)
 			}
 		}
@@ -1997,9 +2057,9 @@ type udsPackageSpec struct {
 }
 
 type udsNetwork struct {
-	ServiceMesh udsServiceMesh   `yaml:"serviceMesh"`
-	Expose      []any            `yaml:"expose,omitempty"`
-	Allow       []map[string]any `yaml:"allow"`
+	ServiceMesh udsServiceMesh `yaml:"serviceMesh"`
+	Expose      []any          `yaml:"expose,omitempty"`
+	Allow       []any          `yaml:"allow"`
 }
 
 type udsServiceMesh struct {
@@ -2026,6 +2086,7 @@ type zarfVariable struct {
 	Default     *string `yaml:"default,omitempty"`
 	Prompt      bool    `yaml:"prompt,omitempty"`
 	Sensitive   bool    `yaml:"sensitive,omitempty"`
+	AutoIndent  bool    `yaml:"autoIndent,omitempty"`
 }
 
 type zarfComponent struct {
@@ -2088,9 +2149,10 @@ type chartMetadata struct {
 // chartValues is the values document written for both the chart defaults
 // (chart/values.yaml) and the Zarf-templated overrides (values/values.yaml).
 type chartValues struct {
-	Environment     map[string]map[string]string    `yaml:"environment,omitempty"`
-	Secrets         map[string]string               `yaml:"secrets,omitempty"`
-	ExternalSecrets map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
+	AdditionalNetworkAllow any                             `yaml:"additionalNetworkAllow"`
+	Environment            map[string]map[string]string    `yaml:"environment,omitempty"`
+	Secrets                map[string]string               `yaml:"secrets,omitempty"`
+	ExternalSecrets        map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
 }
 
 type externalSecretValues struct {
