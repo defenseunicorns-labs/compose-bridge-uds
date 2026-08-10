@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -100,16 +101,7 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 		}
 
 		if containerName := strings.TrimSpace(service.ContainerName); containerName != "" {
-			normalizedContainer, containerErr := normalizeName(containerName)
-			normalizedService, serviceErr := normalizeName(serviceName)
-			if containerErr != nil || serviceErr != nil || normalizedContainer != normalizedService {
-				issues = append(issues, CompatibilityIssue{
-					Code:        "container-name-alias",
-					Path:        path + ".container_name",
-					Message:     "container_name differs from the Compose service name and would change service discovery",
-					Remediation: "remove container_name and address the service by its Compose service name",
-				})
-			}
+			fmt.Fprintf(os.Stderr, "warning: service %q container_name %q ignored; Kubernetes resources use the Compose service name\n", serviceName, containerName)
 		}
 		for networkName, network := range service.Networks {
 			if network == nil {

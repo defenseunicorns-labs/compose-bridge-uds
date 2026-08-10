@@ -40,6 +40,43 @@ services:
 	}
 }
 
+func TestLoadCanonicalIgnoresContainerName(t *testing.T) {
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    container_name: custom-api
+`)
+
+	originalStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stderr = writer
+	app, err := compose.LoadCanonicalYAML(input)
+	os.Stderr = originalStderr
+	if closeErr := writer.Close(); closeErr != nil {
+		t.Fatalf("close stderr writer: %v", closeErr)
+	}
+	warning, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatalf("read stderr: %v", readErr)
+	}
+	if closeErr := reader.Close(); closeErr != nil {
+		t.Fatalf("close stderr reader: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("expected container_name to be ignored, got %v", err)
+	}
+	if got := app.Services[0].Name; got != "api" {
+		t.Fatalf("expected Compose service name to be preserved, got %q", got)
+	}
+	if want := `service "api" container_name "custom-api" ignored`; !strings.Contains(string(warning), want) {
+		t.Fatalf("expected warning %q, got %q", want, warning)
+	}
+}
+
 func TestLoadCanonicalSkipsBindMounts(t *testing.T) {
 	t.Parallel()
 
