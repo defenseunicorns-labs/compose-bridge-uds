@@ -17,14 +17,14 @@ python3 scripts/awesome_compose_matrix.py
 
 | Input | Value |
 |---|---|
-| Tested | 2026-08-07 |
-| Compose Bridge | `de5d420c2ceba7ca6a35bad4f2aff1bf1344e731` |
+| Tested | 2026-08-10 |
+| Compose Bridge | `128d68201085a545759c99ace32462d20d1bbf1e` |
 | Awesome Compose | [`30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562`](https://github.com/docker/awesome-compose/commit/30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562) |
 | Docker Compose | `v5.3.1` |
 | Go | `go1.25.8 linux/arm64` |
 
-All 39 files canonicalized. The bridge supported and rendered 27 models and
-rejected 12 with diagnostics. Rendering only verified generation of
+All 39 files canonicalized. The bridge supported and rendered 30 models and
+rejected 9 with diagnostics. Rendering only verified generation of
 `zarf.yaml`, `chart/Chart.yaml`, and `chart/templates/uds-package.yaml`; it did
 not build images, run Helm or Zarf validation, or deploy workloads.
 
@@ -36,8 +36,8 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `apache-php` | Supported |  |
 | `aspnet-mssql` | Supported |  |
 | `django` | Supported |  |
-| `elasticsearch-logstash-kibana` | Rejected | `container-name-alias: services.elasticsearch.container_name`, `container-name-alias: services.kibana.container_name`, `container-name-alias: services.logstash.container_name`, `network-options: networks.elastic` |
-| `fastapi` | Rejected | `container-name-alias: services.api.container_name` |
+| `elasticsearch-logstash-kibana` | Supported |  |
+| `fastapi` | Supported |  |
 | `flask` | Rejected | `service-field: services.web.stop_signal` |
 | `flask-redis` | Rejected | `service-field: services.web.stop_signal` |
 | `gitea-postgres` | Supported |  |
@@ -57,7 +57,7 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `portainer` | Supported |  |
 | `postgresql-pgadmin` | Supported |  |
 | `prometheus-grafana` | Supported |  |
-| `react-express-mongodb` | Rejected | `service-field: services.frontend.stdin_open` |
+| `react-express-mongodb` | Supported |  |
 | `react-express-mysql` | Supported |  |
 | `react-java-mysql` | Supported |  |
 | `react-nginx` | Supported |  |
@@ -76,14 +76,12 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 
 | Diagnostic | Affected samples | Disposition |
 |---|---|---|
-| `container_name` | `elasticsearch-logstash-kibana`, `fastapi` | The proposed bridge change makes this non-fatal and retains the Compose service name for Kubernetes resources. |
-| `network.driver` | `elasticsearch-logstash-kibana` | The proposed bridge change accepts an otherwise ordinary `bridge` network. |
 | `stop_signal` | `flask`, `flask-redis`, `nginx-flask-mongo` | Defer to broader Kubernetes/UDS support; define `STOPSIGNAL` in the image. |
 | `network.ipv4_address` | `pihole-cloudflared-DoH` | Keep unsupported; use service DNS and cluster-assigned addresses. |
 | `network.ipam` | `pihole-cloudflared-DoH` | Keep unsupported; do not reproduce Docker address management in Kubernetes. |
 | `network_mode` | `plex` | Keep host networking unsupported; use explicit Kubernetes and UDS networking. |
-| `stdin_open` | `react-express-mongodb` | The proposed bridge change maps this to the Kubernetes container `stdin` field. |
 | `labels` | `traefik-golang` | Keep Docker discovery unsupported; use Kubernetes Services and UDS exposure. |
+| `platform` | `wasmedge-kafka-mysql`, `wasmedge-mysql-nginx` | Keep WASI platform selection unsupported; use an OCI image compatible with the target Kubernetes nodes. |
 | `runtime` | `wasmedge-kafka-mysql`, `wasmedge-mysql-nginx` | Defer to broader RuntimeClass support in Kubernetes and UDS. |
 | `sysctls` | `wireguard` | Keep the unsafe sysctl and accompanying host kernel dependencies unsupported. |
 
