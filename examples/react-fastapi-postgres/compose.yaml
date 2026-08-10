@@ -1,6 +1,26 @@
 name: react-fastapi-postgres
 
 services:
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    user: "101"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - name: http
+        target: 8080
+        published: "8080"
+        protocol: tcp
+        app_protocol: http
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/ | grep -q 'Compose Bridge'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   api:
     build:
       context: ./api
@@ -54,26 +74,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-
-  ui:
-    build:
-      context: ./ui
-      dockerfile: Dockerfile
-    user: "101"
-    depends_on:
-      api:
-        condition: service_healthy
-    ports:
-      - name: http
-        target: 8080
-        published: "8080"
-        protocol: tcp
-        app_protocol: http
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/ | grep -q 'Compose Bridge'"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
 
 volumes:
   postgres-data: {}
