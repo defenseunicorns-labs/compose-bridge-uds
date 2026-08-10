@@ -66,11 +66,38 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 	if err != nil {
 		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
 	}
-	if err := validateCompatibility(*project, raw); err != nil {
+	excludedServices, err := parseExcludedServices(*project, raw)
+	if err != nil {
+		return model.App{}, err
+	}
+	if len(excludedServices) == len(project.Services) {
+		return model.App{}, fmt.Errorf("canonical compose model has no package services after applying x-uds-exclude")
+	}
+	if err := validateCompatibility(*project, raw, excludedServices); err != nil {
 		return model.App{}, err
 	}
 
-	return loadProject(*project, raw)
+	return loadProject(*project, raw, excludedServices)
+}
+
+func parseExcludedServices(project types.Project, raw map[string]any) (map[string]struct{}, error) {
+	excluded := map[string]struct{}{}
+	rawServices, _ := asMap(raw["services"])
+	for serviceName := range project.Services {
+		rawService, _ := asMap(rawServices[serviceName])
+		value, exists := rawService["x-uds-exclude"]
+		if !exists {
+			continue
+		}
+		exclude, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("invalid services.%s.x-uds-exclude: must be a boolean", serviceName)
+		}
+		if exclude {
+			excluded[serviceName] = struct{}{}
+		}
+	}
+	return excluded, nil
 }
 
 func loadWorkingDir(sourcePath string) string {
@@ -88,7 +115,7 @@ func loadWorkingDir(sourcePath string) string {
 	return wd
 }
 
-func loadProject(project types.Project, raw map[string]any) (model.App, error) {
+func loadProject(project types.Project, raw map[string]any, excludedServices map[string]struct{}) (model.App, error) {
 	if len(project.Services) == 0 {
 		return model.App{}, fmt.Errorf("canonical compose model has no services")
 	}
@@ -131,6 +158,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	sort.Strings(keys)
 
 	serviceAliases := map[string]string{}
+	excludedAliases := map[string]struct{}{}
 	for _, key := range keys {
 		normalized, err := normalizeName(key)
 		if err != nil {
@@ -138,6 +166,10 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		}
 		registerAlias(serviceAliases, key, normalized)
 		registerAlias(serviceAliases, normalized, normalized)
+		if _, excluded := excludedServices[key]; excluded {
+			excludedAliases[key] = struct{}{}
+			excludedAliases[normalized] = struct{}{}
+		}
 	}
 	canonicalServices, canonicalSecrets, err := canonicalBuildMaps(project)
 	if err != nil {
@@ -148,6 +180,9 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	buildSecretNames := map[string]struct{}{}
 
 	for _, key := range keys {
+		if _, excluded := excludedServices[key]; excluded {
+			continue
+		}
 		rawSvc := project.Services[key]
 		serviceName, _ := resolveAlias(serviceAliases, key)
 
@@ -171,7 +206,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q configs: %w", key, err)
 		}
-		dependsOn, err := parseDependsOn(rawSvc.DependsOn, serviceAliases)
+		dependsOn, err := parseDependsOn(rawSvc.DependsOn, serviceAliases, excludedAliases)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q depends_on: %w", key, err)
 		}
@@ -181,6 +216,9 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		if rawSvc.Build != nil {
 			buildConfig, err := canonicalBuildConfig(canonicalServices, key, serviceAliases)
 			if err != nil {
+				return model.App{}, err
+			}
+			if err := rejectExcludedBuildContexts(key, buildConfig, excludedAliases); err != nil {
 				return model.App{}, err
 			}
 			image = builtImageReference(packageCfg, serviceName)
@@ -223,6 +261,16 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		})
 	}
 
+	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
+	for name, config := range configs {
+		if config.External && strings.TrimSpace(config.Content) == "" {
+			return model.App{}, fmt.Errorf("external compose config %q is not supported", name)
+		}
+	}
+	if err := validateExcludedPackageReferences(packageCfg, excludedAliases); err != nil {
+		return model.App{}, err
+	}
+
 	buildSecrets := map[string]any{}
 	for name := range buildSecretNames {
 		definition, ok := canonicalSecrets[name]
@@ -240,6 +288,90 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		Configs:      configs,
 		BuildSecrets: buildSecrets,
 	}, nil
+}
+
+func rejectExcludedBuildContexts(serviceName string, build map[string]any, excluded map[string]struct{}) error {
+	contexts, ok := asMap(build["additional_contexts"])
+	if !ok {
+		return nil
+	}
+	for _, value := range contexts {
+		reference, ok := value.(string)
+		if !ok || !strings.HasPrefix(reference, "service:") {
+			continue
+		}
+		dependency := strings.TrimPrefix(reference, "service:")
+		if _, isExcluded := excluded[dependency]; isExcluded {
+			return fmt.Errorf("service %q build references excluded service %q through additional_contexts", serviceName, dependency)
+		}
+	}
+	return nil
+}
+
+func retainReferencedResources(
+	services []model.Service,
+	volumes map[string]model.Volume,
+	secrets map[string]model.Secret,
+	configs map[string]model.Config,
+) (map[string]model.Volume, map[string]model.Secret, map[string]model.Config) {
+	volumeRefs := map[string]struct{}{}
+	secretRefs := map[string]struct{}{}
+	configRefs := map[string]struct{}{}
+	for _, service := range services {
+		for _, volume := range service.Volumes {
+			volumeRefs[volume.Name] = struct{}{}
+		}
+		for _, secret := range service.Secrets {
+			secretRefs[secret.Source] = struct{}{}
+		}
+		for _, config := range service.Configs {
+			configRefs[config.Source] = struct{}{}
+		}
+	}
+
+	retainedVolumes := map[string]model.Volume{}
+	for name, volume := range volumes {
+		if _, referenced := volumeRefs[name]; referenced {
+			retainedVolumes[name] = volume
+		}
+	}
+	retainedSecrets := map[string]model.Secret{}
+	for name, secret := range secrets {
+		if _, referenced := secretRefs[name]; referenced {
+			retainedSecrets[name] = secret
+		}
+	}
+	retainedConfigs := map[string]model.Config{}
+	for name, config := range configs {
+		if _, referenced := configRefs[name]; referenced {
+			retainedConfigs[name] = config
+		}
+	}
+	return retainedVolumes, retainedSecrets, retainedConfigs
+}
+
+func validateExcludedPackageReferences(pkg model.Package, excluded map[string]struct{}) error {
+	for _, raw := range pkg.NetworkExpose {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		service := strings.TrimSpace(asString(entry["service"]))
+		if _, isExcluded := excluded[service]; isExcluded {
+			return fmt.Errorf("x-uds.network.expose references excluded service %q", service)
+		}
+	}
+	for _, raw := range pkg.Monitor {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		service := strings.TrimSpace(asString(entry["service"]))
+		if _, isExcluded := excluded[service]; isExcluded {
+			return fmt.Errorf("x-uds.monitor references excluded service %q", service)
+		}
+	}
+	return nil
 }
 
 func canonicalBuildMaps(project types.Project) (map[string]any, map[string]any, error) {
@@ -730,7 +862,7 @@ func parseServiceConfigs(raw []types.ServiceConfigObjConfig, aliases map[string]
 	return refs, nil
 }
 
-func parseDependsOn(raw types.DependsOnConfig, serviceAliases map[string]string) ([]model.Dependency, error) {
+func parseDependsOn(raw types.DependsOnConfig, serviceAliases map[string]string, excludedServices map[string]struct{}) ([]model.Dependency, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -740,6 +872,9 @@ func parseDependsOn(raw types.DependsOnConfig, serviceAliases map[string]string)
 		resolved, ok := resolveAlias(serviceAliases, rawName)
 		if !ok {
 			return nil, fmt.Errorf("unknown service %q", rawName)
+		}
+		if _, excluded := excludedServices[resolved]; excluded {
+			continue
 		}
 		if _, exists := seen[resolved]; exists {
 			continue
@@ -862,9 +997,6 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 		}
 		if _, exists := configs[normalized]; exists {
 			return nil, nil, fmt.Errorf("duplicate normalized top-level config name %q", normalized)
-		}
-		if bool(value.External) && strings.TrimSpace(value.Content) == "" {
-			return nil, nil, fmt.Errorf("external compose config %q is not supported", key)
 		}
 		configs[normalized] = model.Config{Name: normalized, External: bool(value.External), Content: value.Content}
 		registerAlias(aliases, key, normalized)

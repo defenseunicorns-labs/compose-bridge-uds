@@ -33,6 +33,7 @@ services:
 
   db:
     image: postgres:18.4-bookworm
+    x-uds-exclude: true
     user: "999"
     environment:
       POSTGRES_DB: messages

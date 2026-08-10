@@ -49,8 +49,9 @@ var unsupportedServiceRemediation = map[string]string{
 	"sysctls":      "remove host kernel tuning from the application package",
 }
 
-func validateCompatibility(project types.Project, raw map[string]any) error {
+func validateCompatibility(project types.Project, raw map[string]any, excludedServices map[string]struct{}) error {
 	issues := []CompatibilityIssue{}
+	includedNetworks := map[string]struct{}{}
 	rawServices, _ := asMap(raw["services"])
 	serviceNames := make([]string, 0, len(project.Services))
 	for name := range project.Services {
@@ -59,6 +60,9 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 	sort.Strings(serviceNames)
 
 	for _, serviceName := range serviceNames {
+		if _, excluded := excludedServices[serviceName]; excluded {
+			continue
+		}
 		service := project.Services[serviceName]
 		path := "services." + serviceName
 		rawService, _ := asMap(rawServices[serviceName])
@@ -95,6 +99,7 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 			fmt.Fprintf(os.Stderr, "warning: service %q container_name %q ignored; Kubernetes resources use the Compose service name\n", serviceName, containerName)
 		}
 		for networkName, network := range service.Networks {
+			includedNetworks[networkName] = struct{}{}
 			if network == nil {
 				continue
 			}
@@ -129,8 +134,17 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 	}
 
 	for name, network := range project.Networks {
+		if _, used := includedNetworks[name]; !used {
+			continue
+		}
+
 		unsupportedDriver := network.Driver != "" && network.Driver != "bridge"
-		if unsupportedDriver || len(network.DriverOpts) > 0 || network.Internal || network.Attachable || len(network.Ipam.Config) > 0 || network.Ipam.Driver != "" {
+		if unsupportedDriver ||
+			len(network.DriverOpts) > 0 ||
+			network.Internal ||
+			network.Attachable ||
+			len(network.Ipam.Config) > 0 ||
+			network.Ipam.Driver != "" {
 			issues = append(issues, CompatibilityIssue{
 				Code:        "network-options",
 				Path:        "networks." + name,

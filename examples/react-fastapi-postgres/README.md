@@ -9,7 +9,8 @@ Compose source -> Compose Bridge workspace -> Zarf package -> UDS deployment
 
 UDS Authservice protects the UI, NGINX forwards same-origin `/api/` requests and
 the Authservice-provided ID token to FastAPI, and PostgreSQL persists messages
-with the authenticated sender identity.
+with the authenticated sender identity. PostgreSQL runs as part of local
+Compose development but is deliberately excluded from the generated package.
 
 ```text
 Browser -> UDS Authservice -> UI NGINX -> FastAPI -> PostgreSQL
@@ -86,14 +87,18 @@ replaces those placeholders with package-owned image references. Do not use
 this overlay with `docker compose up` or `docker compose build`; it can be
 removed once Docker Compose skips missing images for build services.
 
-Deploy the one archive in `packages/`:
+Deploy the one archive in `packages/` after separately providing a compatible,
+initialized PostgreSQL service reachable as `db` in the application namespace:
 
 ```sh
 ./scripts/deploy.sh
 ```
 
 Deployment does not build or clean anything. It prompts for the PostgreSQL
-password because the Compose secret becomes a sensitive Zarf variable.
+password because the API still consumes the shared Compose secret. This phase
+does not yet provide the development bundle or deploy-time database host
+configuration; package creation and inspection are the supported end-to-end
+workflow until those follow-on phases are complete.
 
 Delete the application namespace and all generated workspace artifacts:
 
@@ -107,10 +112,11 @@ the `react-fastapi-postgres` namespace in the active Kubernetes context, and
 removes `.tmp/`, `logs/`, `out/`, and `packages/`.
 
 The API and UI declare `build:` and receive package-owned references such as
-`zarf.internal/react-fastapi-postgres-api:0.1.0`. PostgreSQL declares only the
-official image and is pulled into the Zarf package normally. Zarf package
-creation builds both application images for `linux/amd64` and `linux/arm64`.
-Update `x-uds.package.version` when preparing a new application release.
+`zarf.internal/react-fastapi-postgres-api:0.1.0`. PostgreSQL declares
+`x-uds-exclude: true`, so its workload, image, volume, initialization config,
+and dependency wait are omitted from the package. Zarf package creation builds
+both application images for `linux/amd64` and `linux/arm64`. Update
+`x-uds.package.version` when preparing a new application release.
 
 The build script always builds the repository's current source as
 `compose-bridge-uds:dev` and uses that image for conversion. This keeps bridge
@@ -197,16 +203,16 @@ failures return `503 Database unavailable` without exposing credentials.
 
 ## Database lifecycle
 
-PostgreSQL uses the `postgres-data` named volume. The initial messages table is
-defined as an inline Compose config mounted into
+In local Compose, PostgreSQL uses the `postgres-data` named volume. The initial
+messages table is defined as an inline Compose config mounted into
 `/docker-entrypoint-initdb.d/001-messages.sql`. PostgreSQL runs that file only
 when initializing an empty volume. This keeps the first database pass small;
 schema changes against existing data will require a migration workflow later.
 
 PostgreSQL and FastAPI mount the same `postgres-password` Compose secret. Local
-Compose reads the development-only file, while the bridge generates a sensitive
-Zarf variable and Kubernetes Secret for deployment. PostgreSQL is internal-only
-and is not exposed through the tenant gateway.
+Compose reads the development-only file. Because FastAPI is included, the
+shared secret remains a sensitive Zarf variable and Kubernetes Secret. The
+database-only volume and initialization config are excluded from the package.
 
 ## Inspect the package
 

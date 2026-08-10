@@ -30,6 +30,10 @@ zarf package deploy zarf-package-wordpress-*.tar.zst
 
 The transformation writes a Helm chart to `out/chart/`, a Zarf package definition to `out/zarf.yaml`, and `out/values/` when the Compose file declares secrets. Services with `build:` are built by Zarf package creation through a generated Buildx Bake definition; no separate `docker compose build` step is required.
 
+Mark a local-development dependency with service-level `x-uds-exclude: true`
+to keep it available to `docker compose up` while omitting it and its exclusive
+resources from the generated package.
+
 ## Documentation
 
 - [Compose support](docs/compose-support.md) describes supported configuration, known limitations, and local Dockerfile builds.

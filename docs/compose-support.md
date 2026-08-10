@@ -18,10 +18,36 @@
 | `ports:`                                                         | Published ports are auto-exposed through the UDS tenant gateway. `expose:` (internal-only) ports are not exposed externally. Compose port declaration order is preserved, and long-syntax `name` and `app_protocol` hints are used to prefer web ports for multi-port services. |
 | `hostname:`                                                      | Preserved as the Kubernetes Pod hostname.                                                                                                                                                                                                                                       |
 | `networks:`                                                      | Service membership is preserved with Pod labels and selector-scoped UDS ingress and egress rules when services use different network sets. The ordinary `bridge` driver is accepted. External networks warn because external peers cannot be inferred; aliases, addresses, and driver options remain unsupported. |
+| `x-uds-exclude: true`                                            | Excludes a service from package generation while leaving ordinary Docker Compose behavior unchanged. Resources used only by excluded services are omitted; shared resources remain.                                                                                            |
 | Bind mounts                                                      | Skipped during conversion with a warning because host paths do not have a portable Kubernetes equivalent. Use named `volumes:`, `configs:`, or `secrets:` for data that should be rendered into the chart.                                                                       |
 | `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `chart/templates/uds-exemption.yaml`.                                                                                                                 |
 
-External configs are not supported. A `configs:` entry must define inline `content:`.
+External configs referenced by an included service are not supported. A
+packaged `configs:` entry must define inline `content:`.
+
+## Excluding development services
+
+Use the service-level `x-uds-exclude: true` extension for dependencies that are
+useful in local Compose development but should not be carried into persistent
+environments:
+
+```yaml
+services:
+  api:
+    image: example/api:1.0.0
+    depends_on:
+      - db
+
+  db:
+    image: postgres:18
+    x-uds-exclude: true
+```
+
+Compose ignores extension fields, so both services still run with `docker
+compose up`. The bridge omits the excluded service, its image, dependencies on
+it, and volumes, configs, or secrets used only by it. A resource shared with an
+included service remains in the package. Explicit `x-uds.network.expose` and
+`x-uds.monitor` entries must not refer to excluded services.
 
 ## Local Dockerfile builds
 

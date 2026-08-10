@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
+	"defenseunicorns/uds-compose-bridge/internal/model"
 	"defenseunicorns/uds-compose-bridge/internal/render"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -381,6 +383,169 @@ func TestLoadCanonicalRejectsUnsupportedTopLevelNetworkOptions(t *testing.T) {
 				t.Fatalf("expected unsupported network options error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadCanonicalExcludesServiceAndPrunesResources(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    secrets:
+      - shared-password
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:18
+    x-uds-exclude: true
+    network_mode: host
+    user: "0"
+    secrets:
+      - shared-password
+    configs:
+      - db-schema
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+volumes:
+  db-data: {}
+secrets:
+  shared-password:
+    file: ./password.txt
+configs:
+  db-schema:
+    external: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 1 || app.Services[0].Name != "api" {
+		t.Fatalf("expected only api to remain, got %#v", app.Services)
+	}
+	if len(app.Services[0].DependsOn) != 0 {
+		t.Fatalf("expected dependency on excluded db to be removed, got %#v", app.Services[0].DependsOn)
+	}
+	if len(app.Volumes) != 0 {
+		t.Fatalf("expected excluded-only volume to be pruned, got %#v", app.Volumes)
+	}
+	if len(app.Configs) != 0 {
+		t.Fatalf("expected excluded-only config to be pruned, got %#v", app.Configs)
+	}
+	if len(app.Secrets) != 1 {
+		t.Fatalf("expected shared secret to remain, got %#v", app.Secrets)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	for _, path := range []string{
+		"chart/templates/deployment-db.yaml",
+		"chart/templates/service-db.yaml",
+		"chart/templates/pvc-db-data.yaml",
+		"chart/templates/configmap-db-schema.yaml",
+		"chart/templates/uds-exemption.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(outDir, path)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be omitted, stat err = %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "secret-shared-password.yaml")); err != nil {
+		t.Fatalf("expected shared secret to remain: %v", err)
+	}
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	if strings.Contains(zarfConfig, "postgres:18") || strings.Contains(zarfConfig, model.DependencyInitImage) {
+		t.Fatalf("did not expect excluded image or dependency init image\n%s", zarfConfig)
+	}
+}
+
+func TestLoadCanonicalXUDSExcludeValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		marker    string
+		wantCount int
+		wantError string
+	}{
+		{name: "false remains included", marker: "false", wantCount: 1},
+		{name: "invalid value", marker: `"true"`, wantError: "services.api.x-uds-exclude: must be a boolean"},
+		{name: "all excluded", marker: "true", wantError: "no package services after applying x-uds-exclude"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(fmt.Sprintf(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    x-uds-exclude: %s
+`, tt.marker))
+			app, err := compose.LoadCanonicalYAML(input)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			if len(app.Services) != tt.wantCount {
+				t.Fatalf("expected %d services, got %d", tt.wantCount, len(app.Services))
+			}
+		})
+	}
+}
+
+func TestLoadCanonicalRejectsXUDSReferenceToExcludedService(t *testing.T) {
+	t.Parallel()
+
+	for _, extension := range []string{
+		"network:\n    expose:\n      - service: db",
+		"monitor:\n    - service: db",
+	} {
+		input := []byte(fmt.Sprintf(`name: demo
+x-uds:
+  %s
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+  db:
+    image: postgres:18
+    x-uds-exclude: true
+`, extension))
+		_, err := compose.LoadCanonicalYAML(input)
+		if err == nil || !strings.Contains(err.Error(), `references excluded service "db"`) {
+			t.Fatalf("expected excluded service reference error, got %v", err)
+		}
+	}
+}
+
+func TestLoadCanonicalRejectsBuildContextFromExcludedService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    build:
+      context: .
+      additional_contexts:
+        base: service:base
+  base:
+    build:
+      context: ./base
+    x-uds-exclude: true
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil || !strings.Contains(err.Error(), `build references excluded service "base"`) {
+		t.Fatalf("expected excluded build context error, got %v", err)
 	}
 }
 
