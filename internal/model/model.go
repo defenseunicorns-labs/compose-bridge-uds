@@ -119,6 +119,7 @@ type Service struct {
 	SecurityOpts []string
 	Command      []string
 	Args         []string
+	Stdin        bool
 	Hostname     string
 	Healthcheck  *Healthcheck
 	Volumes      []VolumeMount

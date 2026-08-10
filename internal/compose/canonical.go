@@ -184,6 +184,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			SecurityOpts: rawSvc.SecurityOpt,
 			Command:      copyCommand(rawSvc.Entrypoint),
 			Args:         copyCommand(rawSvc.Command),
+			Stdin:        rawSvc.StdinOpen,
 			Hostname:     strings.TrimSpace(rawSvc.Hostname),
 			Healthcheck:  parseHealthcheck(rawSvc.HealthCheck),
 			Volumes:      volumeMounts,

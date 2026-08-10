@@ -291,6 +291,7 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 		ImagePullPolicy: "IfNotPresent",
 		Command:         svc.Command,
 		Args:            svc.Args,
+		Stdin:           svc.Stdin,
 		Env:             buildEnv(svc.Env),
 		Ports:           buildContainerPorts(ports),
 		VolumeMounts:    volumeMounts,
@@ -1393,6 +1394,7 @@ type containerSpec struct {
 	ImagePullPolicy string                `yaml:"imagePullPolicy,omitempty"`
 	Command         []string              `yaml:"command,omitempty"`
 	Args            []string              `yaml:"args,omitempty"`
+	Stdin           bool                  `yaml:"stdin,omitempty"`
 	Env             []envVar              `yaml:"env,omitempty"`
 	Ports           []containerPort       `yaml:"ports,omitempty"`
 	VolumeMounts    []volumeMountSpec     `yaml:"volumeMounts,omitempty"`
