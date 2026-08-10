@@ -59,11 +59,11 @@ they are not used as the deployed credentials.
 
 ## Build, deploy, and clean
 
-Each script has one job and assumes its required tools and cluster context are
-already configured.
+Each script has one workflow role and assumes its required tools and cluster
+context are already configured.
 
 Build the local development Compose Bridge image, convert the Compose project,
-and create the Zarf package:
+create the application Zarf package, and assemble the development UDS bundle:
 
 ```sh
 ./scripts/build.sh
@@ -72,7 +72,7 @@ and create the Zarf package:
 The build does not clean old output or touch the cluster. Run cleanup first
 when rebuilding an existing workspace. The generated Helm chart, temporary
 Buildx Bake definition, and OCI image archives are written under `out/`. The
-Zarf archive is written to `packages/`.
+Zarf package and UDS bundle archives are written to `packages/`.
 
 The bridge phase uses `.tmp/` as its temporary directory. This keeps the
 canonical Compose model on the project path, which is available to OrbStack's
@@ -88,21 +88,25 @@ replaces those placeholders with package-owned image references. Do not use
 this overlay with `docker compose up` or `docker compose build`; it can be
 removed once Docker Compose skips missing images for build services.
 
-Deploy the one archive in `packages/` after separately providing a compatible,
-initialized PostgreSQL service reachable as `db` in the application namespace:
+Deploy the completed development bundle:
 
 ```sh
 ./scripts/deploy.sh
 ```
 
-Deployment does not build or clean anything. Supply the name and key of the
-existing Kubernetes Secret behind each shared Compose secret through Zarf
-configuration or `--set-variables` arguments. These infrastructure references
-do not prompt interactively. Both names can point to one Postgres-operator
-credential Secret, with keys such as `username` and `password`. This phase does
-not yet provide the development bundle or deploy-time database host
-configuration; package creation and inspection are the supported end-to-end
-workflow until those follow-on phases are complete.
+Deployment does not build or clean anything. The bundle deploys the UDS
+PostgreSQL Operator package first, creates a single-instance development
+database, and then deploys the local application package. Its tracked
+`uds-config.yaml` changes the API database host, points both mounted Compose
+secrets at the operator-generated credential Secret, and adds API-to-PostgreSQL
+egress. The PostgreSQL package supplies the matching ingress rule. FastAPI
+creates its table idempotently during startup. The deploy script sets
+`UDS_CONFIG` explicitly because deployment configuration is read alongside the
+bundle archive at deploy time rather than embedded in the archive.
+
+The database configuration is intentionally development-oriented. A persistent
+environment can deploy the same application package while supplying its own
+database, Secret references, environment values, and network rules.
 
 Delete the application namespace and all generated workspace artifacts:
 
@@ -117,9 +121,9 @@ removes `.tmp/`, `logs/`, `out/`, and `packages/`.
 
 The API and UI declare `build:` and receive package-owned references such as
 `zarf.internal/react-fastapi-postgres-api:0.1.0`. PostgreSQL declares
-`x-uds-exclude: true`, so its workload, image, volume, initialization config,
-and dependency wait are omitted from the package. Zarf package creation builds
-both application images for `linux/amd64` and `linux/arm64`. Update
+`x-uds-exclude: true`, so its workload, image, volume, and dependency wait are
+omitted from the package. Zarf package creation builds both application images
+for `linux/amd64` and `linux/arm64`. Update
 `x-uds.package.version` when preparing a new application release.
 
 The build script always builds the repository's current source as
@@ -208,10 +212,12 @@ failures return `503 Database unavailable` without exposing credentials.
 ## Database lifecycle
 
 In local Compose, PostgreSQL uses the `postgres-data` named volume. The initial
-messages table is defined as an inline Compose config mounted into
-`/docker-entrypoint-initdb.d/001-messages.sql`. PostgreSQL runs that file only
-when initializing an empty volume. This keeps the first database pass small;
-schema changes against existing data will require a migration workflow later.
+messages table is created idempotently by FastAPI during application startup.
+The same startup path runs when the application uses the development database
+from Compose or an externally managed database supplied during deployment.
+FastAPI does not begin serving requests if schema initialization fails; the
+container exits and its runtime can restart it. More complex schema changes
+will require a migration workflow later.
 
 PostgreSQL and FastAPI mount the same `postgres-username` and
 `postgres-password` Compose secrets. Local Compose reads the development-only
@@ -226,7 +232,7 @@ entries to mount. Both names may identify one operator-created Secret while the
 keys select `username` and `password`. Kubernetes projects those entries into
 `/run/secrets/postgres-username` and `/run/secrets/postgres-password`; FastAPI
 receives only the file paths and reads them with normal file I/O. The
-database-only volume and initialization config are excluded from the package.
+database-only volume is excluded from the package.
 
 ## Inspect the package
 

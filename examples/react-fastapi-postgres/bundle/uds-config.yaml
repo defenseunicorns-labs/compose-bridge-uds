@@ -1,0 +1,22 @@
+variables:
+  react-fastapi-postgres:
+    API_POSTGRES_HOST: pg-cluster.postgres.svc.cluster.local
+    API_POSTGRES_DB: messages
+
+    # The Postgres Operator creates this Secret in the application namespace.
+    # Both Compose secrets select a different key from the same Secret.
+    POSTGRES_USERNAME_SECRET_NAME: react-fastapi-postgres.messages.pg-cluster.credentials.postgresql.acid.zalan.do
+    POSTGRES_USERNAME_SECRET_KEY: username
+    POSTGRES_PASSWORD_SECRET_NAME: react-fastapi-postgres.messages.pg-cluster.credentials.postgresql.acid.zalan.do
+    POSTGRES_PASSWORD_SECRET_KEY: password
+
+    # The Postgres package supplies matching ingress to the database pods.
+    ADDITIONAL_NETWORK_ALLOW: |
+      - direction: Egress
+        selector:
+          app.kubernetes.io/name: api
+        remoteNamespace: postgres
+        remoteSelector:
+          cluster-name: pg-cluster
+        port: 5432
+        description: Allow the FastAPI service to connect to PostgreSQL

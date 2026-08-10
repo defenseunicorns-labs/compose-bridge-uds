@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -9,9 +11,17 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app import database
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await database.initialize_schema()
+    yield
+
+
 app = FastAPI(
     title="React FastAPI Postgres API",
     docs_url=None,
+    lifespan=lifespan,
     openapi_url=None,
     redoc_url=None,
 )

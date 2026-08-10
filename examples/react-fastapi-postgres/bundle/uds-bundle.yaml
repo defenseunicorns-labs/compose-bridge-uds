@@ -1,0 +1,37 @@
+kind: UDSBundle
+metadata:
+  name: react-fastapi-postgres-dev
+  description: Deploy the React and FastAPI example with a development PostgreSQL database
+  version: dev
+
+packages:
+  # PostgreSQL is an environment dependency. It is deliberately separate from
+  # the application package so a persistent environment can provide its own.
+  - name: postgres-operator
+    repository: ghcr.io/uds-packages/postgres-operator
+    ref: 1.15.1-uds.4-upstream
+    overrides:
+      postgres-operator:
+        uds-postgres-config:
+          values:
+            - path: postgresql
+              value:
+                enabled: true
+                teamId: compose-bridge
+                volume:
+                  size: 1Gi
+                numberOfInstances: 1
+                users:
+                  react-fastapi-postgres.messages: []
+                databases:
+                  messages: react-fastapi-postgres.messages
+                version: "16"
+                ingress:
+                  - remoteNamespace: react-fastapi-postgres
+                    remoteSelector:
+                      app.kubernetes.io/name: api
+
+  # build.sh creates this package archive before the bundle is deployed.
+  - name: react-fastapi-postgres
+    path: ../packages
+    ref: 0.1.0

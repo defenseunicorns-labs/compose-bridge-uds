@@ -8,6 +8,18 @@ from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 
+MESSAGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    text TEXT NOT NULL,
+    sender_sub TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT messages_text_length
+        CHECK (char_length(btrim(text)) BETWEEN 1 AND 500)
+)
+"""
+
 
 class DatabaseUnavailableError(Exception):
     pass
@@ -35,6 +47,18 @@ def connection_parameters() -> dict[str, Any]:
         "connect_timeout": 5,
         "row_factory": dict_row,
     }
+
+
+async def initialize_schema() -> None:
+    try:
+        async with await psycopg.AsyncConnection.connect(
+            **connection_parameters()
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute(MESSAGES_SCHEMA)
+    except (OSError, ValueError, psycopg.Error) as error:
+        logger.exception("Unable to initialize database schema")
+        raise DatabaseUnavailableError from error
 
 
 async def list_messages() -> list[dict[str, Any]]:

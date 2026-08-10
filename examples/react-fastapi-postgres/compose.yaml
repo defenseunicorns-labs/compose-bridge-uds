@@ -43,9 +43,6 @@ services:
     secrets:
       - postgres-username
       - postgres-password
-    configs:
-      - source: messages-schema
-        target: /docker-entrypoint-initdb.d/001-messages.sql
     volumes:
       - postgres-data:/var/lib/postgresql
     expose:
@@ -88,19 +85,6 @@ secrets:
   postgres-password:
     # Development-only value for local Compose. The deployed file comes from an external Secret.
     file: ./postgres-password.dev.txt
-
-configs:
-  messages-schema:
-    content: |
-      CREATE TABLE IF NOT EXISTS messages (
-          id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-          text TEXT NOT NULL,
-          sender_sub TEXT NOT NULL,
-          sender_name TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT messages_text_length
-              CHECK (char_length(btrim(text)) BETWEEN 1 AND 500)
-      );
 
 x-uds:
   package:

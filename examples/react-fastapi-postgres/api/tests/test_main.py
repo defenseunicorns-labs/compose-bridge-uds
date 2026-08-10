@@ -63,6 +63,62 @@ def test_connection_parameters_read_credential_files(
 
 
 @pytest.mark.anyio
+async def test_initialize_schema_creates_messages_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+
+    class Cursor:
+        async def __aenter__(self) -> "Cursor":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def execute(self, statement: str) -> None:
+            statements.append(statement)
+
+    class Connection:
+        async def __aenter__(self) -> "Connection":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    class AsyncConnection:
+        @staticmethod
+        async def connect(**_parameters: object) -> Connection:
+            return Connection()
+
+    monkeypatch.setattr(database.psycopg, "AsyncConnection", AsyncConnection)
+    monkeypatch.setattr(database, "connection_parameters", lambda: {})
+
+    await database.initialize_schema()
+
+    assert statements == [database.MESSAGES_SCHEMA]
+    assert "CREATE TABLE IF NOT EXISTS messages" in statements[0]
+
+
+@pytest.mark.anyio
+async def test_application_startup_initializes_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialized = False
+
+    async def initialize_schema() -> None:
+        nonlocal initialized
+        initialized = True
+
+    monkeypatch.setattr(database, "initialize_schema", initialize_schema)
+
+    async with app.router.lifespan_context(app):
+        assert initialized
+
+
+@pytest.mark.anyio
 async def test_health() -> None:
     response = await get("/health")
 

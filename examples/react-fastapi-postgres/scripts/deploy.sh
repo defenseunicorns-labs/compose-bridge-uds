@@ -4,6 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# External Secret references must come from deployment configuration or
-# --set-variables arguments. Missing Secret names fail during Helm rendering.
-uds zarf package deploy packages/zarf-package-*.tar.zst "$@"
+# UDS reads deployment configuration separately from the bundle archive. Point
+# it at the tracked config that connects the app to the bundled PostgreSQL.
+UDS_CONFIG="$PWD/bundle/uds-config.yaml" \
+  uds deploy packages/uds-bundle-*.tar.zst "$@" --confirm
