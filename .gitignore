@@ -37,3 +37,6 @@ examples/**/out/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst
+
+# Python build artifacts
+**/__pycache__/
