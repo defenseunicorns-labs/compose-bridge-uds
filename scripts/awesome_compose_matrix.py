@@ -1,16 +1,11 @@
-#!/usr/bin/env python3
-
-import argparse
 import json
-import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
-
-DEFAULT_AWESOME_REF = "30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562"
+AWESOME_REF = "30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562"
 AWESOME_REPOSITORY = "https://github.com/docker/awesome-compose.git"
 COMPOSE_FILENAMES = (
     "compose.yaml",
@@ -19,239 +14,138 @@ COMPOSE_FILENAMES = (
     "docker-compose.yml",
 )
 ISSUE_PATTERN = re.compile(r"^- \[([^]]+)] ([^:]+):", re.MULTILINE)
-SERVICE_NETWORK_FIELDS = {
-    "aliases",
-    "driver_opts",
-    "interface_name",
-    "ipv4_address",
-    "ipv6_address",
-    "link_local_ips",
-    "mac_address",
-}
-TOP_LEVEL_NETWORK_FIELDS = {
-    "driver",
-    "driver_opts",
-    "internal",
-    "attachable",
-    "ipam",
-}
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run the Compose Bridge static matrix against Awesome Compose."
-    )
-    parser.add_argument(
-        "--awesome-ref",
-        default=DEFAULT_AWESOME_REF,
-        help="Awesome Compose commit or ref to test.",
-    )
-    parser.add_argument(
-        "--report",
-        type=Path,
-        default=Path("/tmp/awesome-compose-report.md"),
-        help="Markdown report path.",
-    )
-    return parser.parse_args()
+def compose_files(awesome_dir: Path):
+    for sample_dir in sorted(path for path in awesome_dir.iterdir() if path.is_dir()):
+        compose_file = next(
+            (
+                sample_dir / name
+                for name in COMPOSE_FILENAMES
+                if (sample_dir / name).is_file()
+            ),
+            None,
+        )
+        if compose_file:
+            yield sample_dir.name, compose_file
 
 
-def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, text=True, **kwargs)
-
-
-def run_required(command: list[str], **kwargs: object) -> None:
-    result = run(command, **kwargs)
-    if result.returncode != 0:
-        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}")
-
-
-def find_compose_files(awesome_dir: Path) -> list[tuple[str, Path]]:
-    selected: dict[Path, Path] = {}
-    for filename in COMPOSE_FILENAMES:
-        for path in awesome_dir.rglob(filename):
-            if ".git" in path.parts:
-                continue
-            selected.setdefault(path.parent, path)
-
-    return sorted(
-        (
-            (directory.relative_to(awesome_dir).as_posix(), path)
-            for directory, path in selected.items()
-        ),
-        key=lambda item: item[0],
-    )
-
-
-def canonical_model(compose_file: Path) -> tuple[dict[str, object] | None, str]:
-    environment = os.environ.copy()
-    environment["COMPOSE_ANSI"] = "never"
-    result = run(
+def canonical_model(compose_file: Path):
+    result = subprocess.run(
         [
             "docker",
             "compose",
+            "--ansi",
+            "never",
             "-f",
             compose_file.name,
             "config",
             "--format",
             "json",
         ],
+        check=False,
         cwd=compose_file.parent,
-        env=environment,
         capture_output=True,
+        text=True,
     )
-    if result.returncode != 0:
-        return None, result.stderr
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip())
 
-    try:
-        model = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        return None, f"decode canonical model: {error}"
-
-    project_name = model.get("name", "")
-    for service_name, service in model.get("services", {}).items():
-        if service.get("build") is not None and not service.get("image"):
-            service["image"] = f"{project_name}-{service_name}"
-    return model, ""
+    model = json.loads(result.stdout)
+    for name, service in model["services"].items():
+        if "build" in service and not service.get("image"):
+            service["image"] = f"{model['name']}-{name}"
+    return model
 
 
-def present(value: object) -> bool:
-    return value not in (None, "", False, [], {})
-
-
-def network_labels(model: dict[str, object], path: str) -> set[str]:
-    labels: set[str] = set()
-    if path.startswith("services.") and ".networks." in path:
-        service_path, network_name = path.removeprefix("services.").split(
-            ".networks.", 1
-        )
-        network = (
-            model.get("services", {})
-            .get(service_path, {})
-            .get("networks", {})
-            .get(network_name, {})
-            or {}
-        )
-        for key in SERVICE_NETWORK_FIELDS:
-            if present(network.get(key)):
-                labels.add(f"network.{key}")
-    elif path.startswith("networks."):
-        network_name = path.removeprefix("networks.")
-        network = model.get("networks", {}).get(network_name, {}) or {}
-        for key in TOP_LEVEL_NETWORK_FIELDS:
-            if present(network.get(key)):
-                labels.add(f"network.{key}")
-    return labels
-
-
-def diagnostic_labels(model: dict[str, object], stderr: str) -> list[str]:
-    labels: set[str] = set()
-    for code, path in ISSUE_PATTERN.findall(stderr):
-        if code == "container-name-alias":
-            labels.add("container_name")
-        elif code == "service-field":
-            labels.add(path.rsplit(".", 1)[-1])
-        elif code == "network-options":
-            labels.update(network_labels(model, path))
-        else:
-            labels.add(code)
-    return sorted(labels)
-
-
-def render_report(results: list[tuple[str, str, list[str]]]) -> str:
+def update_results_table(matrix_file: Path, results):
     lines = [
-        "# Awesome Compose compatibility report",
-        "",
         "| Sample | Static result | Diagnostics |",
         "|---|---|---|",
     ]
-    for sample, result, diagnostics in results:
-        rendered = ", ".join(f"`{item}`" for item in diagnostics)
-        lines.append(f"| `{sample}` | {result} | {rendered} |")
-    return "\n".join(lines) + "\n"
+    for sample, status, diagnostics in results:
+        rendered = ", ".join(f"`{diagnostic}`" for diagnostic in diagnostics)
+        lines.append(f"| `{sample}` | {status} | {rendered} |")
+
+    document = matrix_file.read_text()
+    table_start = document.index("| Sample | Static result | Diagnostics |")
+    table_end = document.index("\n\n## ", table_start)
+    matrix_file.write_text(
+        document[:table_start] + "\n".join(lines) + document[table_end:]
+    )
 
 
-def main() -> int:
-    args = parse_args()
+def main():
     repo_root = Path(__file__).resolve().parents[1]
-    counts = {"Supported": 0, "Rejected": 0, "Failed": 0}
-    results: list[tuple[str, str, list[str]]] = []
+    results = []
 
     with tempfile.TemporaryDirectory(prefix="awesome-compose-matrix-") as temp:
         work_dir = Path(temp)
         awesome_dir = work_dir / "awesome-compose"
-        bridge_binary = work_dir / "compose-bridge-uds"
+        bridge = work_dir / "compose-bridge-uds"
 
-        run_required(
-            [
-                "git",
-                "clone",
-                "--quiet",
-                "--no-checkout",
-                AWESOME_REPOSITORY,
-                str(awesome_dir),
-            ]
+        subprocess.run(
+            ["git", "clone", "--quiet", AWESOME_REPOSITORY, awesome_dir], check=True
         )
-        run_required(
-            ["git", "-C", str(awesome_dir), "checkout", "--quiet", args.awesome_ref]
+        subprocess.run(
+            ["git", "-C", awesome_dir, "checkout", "--quiet", AWESOME_REF], check=True
         )
-        run_required(
-            ["go", "build", "-o", str(bridge_binary), "."], cwd=repo_root
-        )
+        subprocess.run(["go", "build", "-o", bridge, "."], cwd=repo_root, check=True)
 
-        for sample, compose_file in find_compose_files(awesome_dir):
-            model, error = canonical_model(compose_file)
-            if model is None:
+        for sample, compose_file in compose_files(awesome_dir):
+            try:
+                model = canonical_model(compose_file)
+            except (json.JSONDecodeError, RuntimeError) as error:
+                print(f"{sample}: {error}", file=sys.stderr)
                 results.append((sample, "Failed", ["compose-config"]))
-                counts["Failed"] += 1
-                print(f"{sample}: {error.strip()}", file=sys.stderr)
                 continue
 
-            sample_work = work_dir / "results" / sample.replace("/", "-")
-            output_dir = sample_work / "out"
-            sample_work.mkdir(parents=True)
-            canonical_file = sample_work / "compose.json"
+            sample_dir = work_dir / "results" / sample
+            sample_dir.mkdir(parents=True)
+            canonical_file = sample_dir / "compose.json"
             canonical_file.write_text(json.dumps(model, indent=2) + "\n")
-
-            result = run(
-                [
-                    str(bridge_binary),
-                    "-in",
-                    str(canonical_file),
-                    "-out",
-                    str(output_dir),
-                ],
+            result = subprocess.run(
+                [bridge, "-in", canonical_file, "-out", sample_dir / "out"],
                 capture_output=True,
+                text=True,
+                check=False,
             )
+
             if result.returncode == 0:
-                status = "Supported"
-                diagnostics: list[str] = []
+                results.append((sample, "Supported", []))
+                continue
+
+            diagnostics = sorted(
+                {
+                    f"{code}: {path}"
+                    for code, path in ISSUE_PATTERN.findall(result.stderr)
+                }
+            )
+            if diagnostics:
+                results.append((sample, "Rejected", diagnostics))
             else:
-                diagnostics = diagnostic_labels(model, result.stderr)
-                if diagnostics:
-                    status = "Rejected"
-                else:
-                    status = "Failed"
-                    diagnostics = ["transform-error"]
-                    print(f"{sample}: {result.stderr.strip()}", file=sys.stderr)
+                print(f"{sample}: {result.stderr.strip()}", file=sys.stderr)
+                results.append((sample, "Failed", ["transform-error"]))
 
-            counts[status] += 1
-            results.append((sample, status, diagnostics))
+    for status in ("Supported", "Rejected", "Failed"):
+        print(f"{status}: {sum(result[1] == status for result in results)}")
 
-    report = render_report(results)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(report)
-    print(report, end="")
-    print(
-        f"Supported: {counts['Supported']}; rejected: {counts['Rejected']}; "
-        f"failed: {counts['Failed']}"
-    )
-    print(f"Report: {args.report}")
-    return 1 if counts["Failed"] else 0
+    if any(result[1] == "Failed" for result in results):
+        print(
+            "Results table not updated because the matrix had failures.",
+            file=sys.stderr,
+        )
+        return 1
+
+    matrix_file = repo_root / "docs" / "awesome-compose-compatibility-matrix.md"
+    update_results_table(matrix_file, results)
+    print(f"Updated: {matrix_file}")
+    return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (FileNotFoundError, RuntimeError) as error:
+    except (OSError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)

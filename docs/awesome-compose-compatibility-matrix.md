@@ -1,13 +1,13 @@
 # Awesome Compose Compatibility Matrix
 
-This document records a manually performed compatibility matrix against the corpus of examples in 
+This document records a manually performed compatibility matrix against the corpus of examples in
 [Docker Awesome Compose](https://github.com/docker/awesome-compose).
 
 ## Perform matrix test
 
 Run the matrix script from any directory with Python 3.9+, Git, Go, and Docker
-Compose installed. It tests the current checkout and writes a Markdown report to
-`/tmp/awesome-compose-report.md`.
+Compose installed. It tests the current checkout and updates the Results table
+below.
 
 ```bash
 python3 scripts/awesome_compose_matrix.py
@@ -36,28 +36,28 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `apache-php` | Supported |  |
 | `aspnet-mssql` | Supported |  |
 | `django` | Supported |  |
-| `elasticsearch-logstash-kibana` | Rejected | `container_name`, `network.driver` |
-| `fastapi` | Rejected | `container_name` |
-| `flask` | Rejected | `stop_signal` |
-| `flask-redis` | Rejected | `stop_signal` |
+| `elasticsearch-logstash-kibana` | Rejected | `container-name-alias: services.elasticsearch.container_name`, `container-name-alias: services.kibana.container_name`, `container-name-alias: services.logstash.container_name`, `network-options: networks.elastic` |
+| `fastapi` | Rejected | `container-name-alias: services.api.container_name` |
+| `flask` | Rejected | `service-field: services.web.stop_signal` |
+| `flask-redis` | Rejected | `service-field: services.web.stop_signal` |
 | `gitea-postgres` | Supported |  |
 | `minecraft` | Supported |  |
 | `nextcloud-postgres` | Supported |  |
 | `nextcloud-redis-mariadb` | Supported |  |
 | `nginx-aspnet-mysql` | Supported |  |
-| `nginx-flask-mongo` | Rejected | `stop_signal` |
+| `nginx-flask-mongo` | Rejected | `service-field: services.backend.stop_signal` |
 | `nginx-flask-mysql` | Supported |  |
 | `nginx-golang` | Supported |  |
 | `nginx-golang-mysql` | Supported |  |
 | `nginx-golang-postgres` | Supported |  |
 | `nginx-nodejs-redis` | Supported |  |
 | `nginx-wsgi-flask` | Supported |  |
-| `pihole-cloudflared-DoH` | Rejected | `network.ipam`, `network.ipv4_address` |
-| `plex` | Rejected | `network_mode` |
+| `pihole-cloudflared-DoH` | Rejected | `network-options: networks.dns-net`, `network-options: services.cloudflared.networks.dns-net` |
+| `plex` | Rejected | `service-field: services.plex.network_mode` |
 | `portainer` | Supported |  |
 | `postgresql-pgadmin` | Supported |  |
 | `prometheus-grafana` | Supported |  |
-| `react-express-mongodb` | Rejected | `stdin_open` |
+| `react-express-mongodb` | Rejected | `service-field: services.frontend.stdin_open` |
 | `react-express-mysql` | Supported |  |
 | `react-java-mysql` | Supported |  |
 | `react-nginx` | Supported |  |
@@ -65,11 +65,11 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `sparkjava` | Supported |  |
 | `sparkjava-mysql` | Supported |  |
 | `spring-postgres` | Supported |  |
-| `traefik-golang` | Rejected | `labels` |
+| `traefik-golang` | Rejected | `service-field: services.backend.labels` |
 | `vuejs` | Supported |  |
-| `wasmedge-kafka-mysql` | Rejected | `platform`, `runtime` |
-| `wasmedge-mysql-nginx` | Rejected | `platform`, `runtime` |
-| `wireguard` | Rejected | `sysctls` |
+| `wasmedge-kafka-mysql` | Rejected | `service-field: services.etl.platform`, `service-field: services.etl.runtime` |
+| `wasmedge-mysql-nginx` | Rejected | `service-field: services.backend.platform`, `service-field: services.backend.runtime` |
+| `wireguard` | Rejected | `service-field: services.wireguard.sysctls` |
 | `wordpress-mysql` | Supported |  |
 
 ## Diagnostics
