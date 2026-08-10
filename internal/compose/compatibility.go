@@ -37,7 +37,7 @@ var supportedServiceKeys = map[string]struct{}{
 	"container_name": {}, "depends_on": {}, "deploy": {}, "entrypoint": {},
 	"environment": {}, "env_file": {}, "expose": {}, "healthcheck": {}, "hostname": {},
 	"image": {}, "networks": {}, "ports": {}, "privileged": {}, "profiles": {}, "restart": {},
-	"secrets": {}, "security_opt": {}, "user": {}, "volumes": {},
+	"secrets": {}, "security_opt": {}, "stdin_open": {}, "user": {}, "volumes": {},
 }
 
 var unsupportedServiceRemediation = map[string]string{
@@ -138,7 +138,8 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 	}
 
 	for name, network := range project.Networks {
-		if network.Driver != "" || len(network.DriverOpts) > 0 || network.Internal || network.Attachable || len(network.Ipam.Config) > 0 || network.Ipam.Driver != "" {
+		unsupportedDriver := network.Driver != "" && network.Driver != "bridge"
+		if unsupportedDriver || len(network.DriverOpts) > 0 || network.Internal || network.Attachable || len(network.Ipam.Config) > 0 || network.Ipam.Driver != "" {
 			issues = append(issues, CompatibilityIssue{
 				Code:        "network-options",
 				Path:        "networks." + name,

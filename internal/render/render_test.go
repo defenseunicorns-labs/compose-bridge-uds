@@ -215,6 +215,49 @@ networks:
 	}
 }
 
+func TestLoadCanonicalAcceptsBridgeNetworkDriver(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    networks: [app]
+networks:
+  app:
+    driver: bridge
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("expected ordinary bridge network to be supported, got %v", err)
+	}
+	if got := strings.Join(app.Services[0].Networks, ","); got != "app" {
+		t.Fatalf("expected bridge network membership to be preserved, got %q", got)
+	}
+}
+
+func TestLoadCanonicalRejectsUnsupportedTopLevelNetworkOptions(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"custom driver": `driver: overlay`,
+		"bridge options": `driver: bridge
+    driver_opts:
+      com.example.option: enabled`,
+	}
+	for name, network := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte("name: demo\nservices:\n  api:\n    image: ghcr.io/acme/api:1.0.0\n    networks: [app]\nnetworks:\n  app:\n    " + network + "\n")
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil || !strings.Contains(err.Error(), "[network-options] networks.app") {
+				t.Fatalf("expected unsupported network options error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadCanonicalRejectsCollidingNormalizedNetworkNames(t *testing.T) {
 	t.Parallel()
 
@@ -316,6 +359,29 @@ services:
 	deployment := readFile(t, filepath.Join(out, "chart", "templates", "deployment-api.yaml"))
 	if !strings.Contains(deployment, "hostname: api-node") {
 		t.Fatalf("expected hostname in deployment\n%s", deployment)
+	}
+}
+
+func TestWritePackageMapsStdinOpen(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    stdin_open: true
+`)
+	out := t.TempDir()
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if err := render.WritePackage(out, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	deployment := readFile(t, filepath.Join(out, "chart", "templates", "deployment-api.yaml"))
+	if !strings.Contains(deployment, "stdin: true") {
+		t.Fatalf("expected stdin to be enabled in deployment\n%s", deployment)
 	}
 }
 
