@@ -7,7 +7,7 @@ This document records a manually performed compatibility matrix against the corp
 
 Run the matrix script from the repository root with [uv](https://docs.astral.sh/uv/),
 Git, Go, and Docker Compose installed. It tests the current checkout and updates
-the Results table below.
+the tested baseline and Results table below.
 
 ```bash
 ./scripts/awesome_compose_matrix.py
@@ -15,21 +15,24 @@ the Results table below.
 
 ## Tested baseline
 
+<!-- matrix-baseline:start -->
 | Input | Value |
 |---|---|
-| Tested | 2026-08-10 |
-| Compose Bridge | `128d68201085a545759c99ace32462d20d1bbf1e` |
+| Compose Bridge | `bff5ab4c3e197955983cb15f72e5c34b24a7cb50` |
 | Awesome Compose | [`30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562`](https://github.com/docker/awesome-compose/commit/30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562) |
-| Docker Compose | `v5.3.1` |
-| Go | `go1.25.8 linux/arm64` |
+| Docker Compose | `5.1.2` |
+| Go | `go1.26.5 darwin/arm64` |
 
-All 39 files canonicalized. The bridge supported and rendered 30 models and
-rejected 9 with diagnostics. Rendering only verified generation of
+All 39 files canonicalized. The bridge supported and rendered 30 models and rejected 9 with diagnostics.
+<!-- matrix-baseline:end -->
+
+Rendering only verified generation of
 `zarf.yaml`, `chart/Chart.yaml`, and `chart/templates/uds-package.yaml`; it did
 not build images, run Helm or Zarf validation, or deploy workloads.
 
 ## Results
 
+<!-- matrix-results:start -->
 | Sample | Static result | Diagnostics |
 |---|---|---|
 | `angular` | Supported |  |
@@ -71,6 +74,7 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `wasmedge-mysql-nginx` | Rejected | `service-field: services.backend.platform`, `service-field: services.backend.runtime` |
 | `wireguard` | Rejected | `service-field: services.wireguard.sysctls` |
 | `wordpress-mysql` | Supported |  |
+<!-- matrix-results:end -->
 
 ## Diagnostics
 

@@ -21,6 +21,10 @@ COMPOSE_FILENAMES = (
     "docker-compose.yml",
 )
 ISSUE_PATTERN = re.compile(r"^- \[([^]]+)] ([^:]+):", re.MULTILINE)
+BASELINE_START = "<!-- matrix-baseline:start -->"
+BASELINE_END = "<!-- matrix-baseline:end -->"
+RESULTS_START = "<!-- matrix-results:start -->"
+RESULTS_END = "<!-- matrix-results:end -->"
 
 
 def compose_files(awesome_dir: Path):
@@ -65,21 +69,76 @@ def canonical_model(compose_file: Path):
     return model
 
 
-def update_results_table(matrix_file: Path, results):
-    lines = [
+def command_output(command, cwd=None):
+    return subprocess.run(
+        command,
+        check=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def tested_baseline(repo_root: Path):
+    bridge_commit = command_output(["git", "rev-parse", "HEAD"], cwd=repo_root)
+    if command_output(["git", "status", "--short"], cwd=repo_root):
+        bridge_commit += "-dirty"
+
+    awesome_commit = (
+        f"[`{AWESOME_REF}`]"
+        f"(https://github.com/docker/awesome-compose/commit/{AWESOME_REF})"
+    )
+    return [
+        ("Compose Bridge", f"`{bridge_commit}`"),
+        ("Awesome Compose", awesome_commit),
+        (
+            "Docker Compose",
+            f"`{command_output(['docker', 'compose', 'version', '--short'])}`",
+        ),
+        ("Go", f"`{command_output(['go', 'version']).removeprefix('go version ')}`"),
+    ]
+
+
+def replace_generated_section(document, start_marker, end_marker, content):
+    content_start = document.index(start_marker) + len(start_marker)
+    content_end = document.index(end_marker, content_start)
+    return (
+        document[:content_start]
+        + "\n"
+        + content.rstrip()
+        + "\n"
+        + document[content_end:]
+    )
+
+
+def update_matrix_document(matrix_file: Path, results, baseline):
+    baseline_lines = ["| Input | Value |", "|---|---|"]
+    baseline_lines.extend(f"| {name} | {value} |" for name, value in baseline)
+
+    supported = sum(result[1] == "Supported" for result in results)
+    rejected = sum(result[1] == "Rejected" for result in results)
+    summary = (
+        f"All {len(results)} files canonicalized. The bridge supported and "
+        f"rendered {supported} models and rejected {rejected} with diagnostics."
+    )
+    baseline_lines.extend(["", summary])
+
+    result_lines = [
         "| Sample | Static result | Diagnostics |",
         "|---|---|---|",
     ]
     for sample, status, diagnostics in results:
         rendered = ", ".join(f"`{diagnostic}`" for diagnostic in diagnostics)
-        lines.append(f"| `{sample}` | {status} | {rendered} |")
+        result_lines.append(f"| `{sample}` | {status} | {rendered} |")
 
     document = matrix_file.read_text()
-    table_start = document.index("| Sample | Static result | Diagnostics |")
-    table_end = document.index("\n\n## ", table_start)
-    matrix_file.write_text(
-        document[:table_start] + "\n".join(lines) + document[table_end:]
+    document = replace_generated_section(
+        document, BASELINE_START, BASELINE_END, "\n".join(baseline_lines)
     )
+    document = replace_generated_section(
+        document, RESULTS_START, RESULTS_END, "\n".join(result_lines)
+    )
+    matrix_file.write_text(document)
 
 
 def main():
@@ -145,7 +204,7 @@ def main():
         return 1
 
     matrix_file = repo_root / "docs" / "awesome-compose-compatibility-matrix.md"
-    update_results_table(matrix_file, results)
+    update_matrix_document(matrix_file, results, tested_baseline(repo_root))
     print(f"Updated: {matrix_file}")
     return 0
 
