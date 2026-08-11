@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 docker compose --file compose.yaml --file compose.dev.yaml \
   down --volumes --remove-orphans

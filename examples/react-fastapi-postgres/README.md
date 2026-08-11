@@ -66,7 +66,7 @@ Build the local development Compose Bridge image, convert the Compose project,
 create the application Zarf package, and assemble the development UDS bundle:
 
 ```sh
-./scripts/build.sh
+./uds/scripts/build.sh
 ```
 
 The build does not clean old output or touch the cluster. Run cleanup first
@@ -92,7 +92,7 @@ removed once Docker Compose skips missing images for build services.
 Deploy the completed development bundle:
 
 ```sh
-./scripts/deploy.sh
+./uds/scripts/deploy.sh
 ```
 
 Deployment does not build or clean anything. The bundle deploys the UDS
@@ -113,7 +113,7 @@ Delete the application namespace and all generated workspace artifacts:
 
 ```sh
 kubectl config current-context
-./scripts/clean.sh
+./uds/scripts/clean.sh
 ```
 
 Cleanup stops the local Compose project, deletes its PostgreSQL volume, targets
@@ -133,6 +133,18 @@ The build script always builds the repository's current source as
 development in the same explicit build flow as package generation.
 
 ## Access the authenticated UI
+
+Create the standard local UDS development user when the cluster does not
+already have one:
+
+```sh
+./uds/scripts/create-doug.sh
+```
+
+The script reads the Keycloak administrator credentials from the cluster,
+creates `Doug Unicorn` as `doug`, and can be rerun safely if the user already
+exists. It is development-only and uses the conventional UDS test password
+`unicorn123!@#UN`.
 
 After the build and deployment completes, open:
 
@@ -238,12 +250,12 @@ database-only volume is excluded from the package.
 
 ## Inspect the package
 
-`scripts/inspect.sh` reads the one Zarf archive in `uds/packages/` directly. It
+`uds/scripts/inspect.sh` reads the one Zarf archive in `uds/packages/` directly. It
 does not read `out/` and can be run after the generated chart directory has
 been discarded:
 
 ```sh
-./scripts/inspect.sh
+./uds/scripts/inspect.sh
 ```
 
 The report includes the package definition, bundled images, packaged chart
@@ -255,7 +267,7 @@ Deployment shows exactly how those external references become mounted files.
 ## Directory ownership
 
 - `compose.yaml` and `compose.bridge.yaml` are the conversion source.
-- `scripts/` contains the focused build, deploy, clean, and inspect commands.
+- `uds/scripts/` contains the focused UDS workflow and local cluster helper commands.
 - `postgres-username.dev.txt` and `postgres-password.dev.txt` are non-secret local Compose credentials.
 - `src/api/` contains the FastAPI service, API tests, and its non-root image build.
 - `src/ui/` contains the React and NGINX source used to build the image.

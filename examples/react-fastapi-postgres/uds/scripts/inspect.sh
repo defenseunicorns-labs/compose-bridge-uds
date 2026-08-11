@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 printf '\n== Package Definition ==\n\n'
 uds zarf package inspect definition uds/packages/zarf-package-*.tar.zst

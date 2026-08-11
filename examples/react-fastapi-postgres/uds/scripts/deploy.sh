@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 # UDS reads deployment configuration separately from the bundle archive. Point
 # it at the tracked config that connects the app to the bundled PostgreSQL.
