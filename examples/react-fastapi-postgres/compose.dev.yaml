@@ -2,6 +2,6 @@ services:
   ui:
     volumes:
       - type: bind
-        source: ./ui/nginx/api-auth.dev.conf
+        source: ./src/ui/nginx/api-auth.dev.conf
         target: /etc/nginx/conf.d/includes/api-auth.conf
         read_only: true

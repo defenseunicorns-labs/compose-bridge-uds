@@ -37,9 +37,9 @@ UDS, displays `Local Developer` as the signed-in user, and stores messages in
 the local PostgreSQL volume.
 
 The shared NGINX configuration loads a small authorization-header snippet inside
-its `/api/` location. In production, `ui/nginx/api-auth.conf` forwards the token
+its `/api/` location. In production, `src/ui/nginx/api-auth.conf` forwards the token
 supplied by UDS Authservice. `compose.dev.yaml` replaces only that snippet with
-`ui/nginx/api-auth.dev.conf`, which supplies a fixed, unsigned JWT. The token is
+`src/ui/nginx/api-auth.dev.conf`, which supplies a fixed, unsigned JWT. The token is
 not a secret and is intended only to simulate the deployed identity header. It
 does not provide local login or access enforcement.
 
@@ -72,7 +72,8 @@ create the application Zarf package, and assemble the development UDS bundle:
 The build does not clean old output or touch the cluster. Run cleanup first
 when rebuilding an existing workspace. The generated Helm chart, temporary
 Buildx Bake definition, and OCI image archives are written under `out/`. The
-Zarf package and UDS bundle archives are written to `packages/`.
+The Zarf package archive is written to `uds/packages/`, and the completed UDS
+bundle archive is written to `uds/bundle/`.
 
 The bridge phase uses `.tmp/` as its temporary directory. This keeps the
 canonical Compose model on the project path, which is available to OrbStack's
@@ -117,7 +118,8 @@ kubectl config current-context
 
 Cleanup stops the local Compose project, deletes its PostgreSQL volume, targets
 the `react-fastapi-postgres` namespace in the active Kubernetes context, and
-removes `.tmp/`, `logs/`, `out/`, and `packages/`.
+removes `.tmp/`, `logs/`, `out/`, `uds/packages/`, and the generated bundle
+archive under `uds/bundle/`.
 
 The API and UI declare `build:` and receive package-owned references such as
 `zarf.internal/react-fastapi-postgres-api:0.1.0`. PostgreSQL declares
@@ -236,7 +238,7 @@ database-only volume is excluded from the package.
 
 ## Inspect the package
 
-`scripts/inspect.sh` reads the one Zarf archive in `packages/` directly. It
+`scripts/inspect.sh` reads the one Zarf archive in `uds/packages/` directly. It
 does not read `out/` and can be run after the generated chart directory has
 been discarded:
 
@@ -255,7 +257,8 @@ Deployment shows exactly how those external references become mounted files.
 - `compose.yaml` and `compose.bridge.yaml` are the conversion source.
 - `scripts/` contains the focused build, deploy, clean, and inspect commands.
 - `postgres-username.dev.txt` and `postgres-password.dev.txt` are non-secret local Compose credentials.
-- `api/` contains the FastAPI service, API tests, and its non-root image build.
-- `ui/` contains the React and NGINX source used to build the image.
+- `src/api/` contains the FastAPI service, API tests, and its non-root image build.
+- `src/ui/` contains the React and NGINX source used to build the image.
+- `uds/bundle/` contains the tracked bundle definition and deployment configuration plus the generated UDS bundle archive.
+- `uds/packages/` contains the generated Zarf package archive consumed by the bundle.
 - `out/` is disposable Compose Bridge output.
-- `packages/` contains the local distribution archive.

@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-mkdir -p .tmp packages
+mkdir -p .tmp uds/packages
 
 # Build the local Compose Bridge transformation image.
 docker build --tag compose-bridge-uds:dev ../..
@@ -22,10 +22,10 @@ TMPDIR="$PWD/.tmp" docker compose \
 
 # Build the application Zarf package consumed by the bundle.
 uds zarf package create out \
-  --output packages \
+  --output uds/packages \
   --confirm
 
 # Build the complete development bundle containing PostgreSQL and the app.
-uds create bundle \
-  --output packages \
+uds create uds/bundle \
+  --output uds/bundle \
   --confirm

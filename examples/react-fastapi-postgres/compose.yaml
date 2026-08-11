@@ -3,7 +3,7 @@ name: react-fastapi-postgres
 services:
   ui:
     build:
-      context: ./ui
+      context: ./src/ui
       dockerfile: Dockerfile
     user: "101"
     depends_on:
@@ -23,7 +23,7 @@ services:
 
   api:
     build:
-      context: ./api
+      context: ./src/api
       dockerfile: Dockerfile
     user: "10001"
     environment:

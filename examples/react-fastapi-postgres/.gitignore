@@ -1,24 +1,24 @@
 # Compose Bridge and Zarf workflow artifacts
 out/
-packages/
+uds/packages/
 logs/
 .tmp/
 *.tar.zst
 
 # React / Vite
-ui/node_modules/
-ui/dist/
-ui/.vite/
+src/ui/node_modules/
+src/ui/dist/
+src/ui/.vite/
 
 # Python artifacts
 .pytest_cache/
-api/__pycache__/
-api/**/*.py[cod]
-api/.venv/
-api/.mypy_cache/
-api/.ruff_cache/
-api/.coverage
-api/htmlcov/
+src/api/__pycache__/
+src/api/**/*.py[cod]
+src/api/.venv/
+src/api/.mypy_cache/
+src/api/.ruff_cache/
+src/api/.coverage
+src/api/htmlcov/
 
 # Local agent tooling
 .agents/

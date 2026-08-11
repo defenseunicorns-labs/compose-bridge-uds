@@ -11,4 +11,5 @@ kubectl delete namespace react-fastapi-postgres --ignore-not-found
 kubectl delete namespace postgres-operator --ignore-not-found
 kubectl delete namespace postgres --ignore-not-found
 
-rm -rf -- .tmp logs out packages
+rm -rf -- .tmp logs out uds/packages
+rm -f -- uds/bundle/uds-bundle-*.tar.zst
