@@ -5,6 +5,8 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 > [!IMPORTANT]
 > **This is not a supported product pathway.** It's an experimental transformation we're sharing to gather feedback. Please enagage with our team on the project [discussions page](https://github.com/defenseunicorns-labs/compose-bridge-uds/discussions) with any questions or suggestions.
 
+![Screenshot of a diagram depicting the packaging process via the conventional approach versus the Compose Bridge approach.](/docs/diagram.png)
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
