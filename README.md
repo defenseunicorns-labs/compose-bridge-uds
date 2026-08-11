@@ -32,6 +32,9 @@ The transformation writes a Helm chart to `out/chart/`, a Zarf package definitio
 
 ## Documentation
 
+> [!TIP]
+> **Is Compose Bridge a good fit for your application?** Use the [Awesome Compose compatibility matrix](docs/awesome-compose-compatibility-matrix.md) as a practical benchmark. If your application depends on unsupported Compose features or needs deeper package customization, start with the [UDS reference package](https://github.com/uds-packages/reference-package) and build the package directly.
+
 - [Compose support](docs/compose-support.md) describes supported configuration, known limitations, and local Dockerfile builds.
 - [UDS package generation](docs/uds-package.md) describes generated resources, `x-uds` extensions, secrets, and policy exemptions.
 - [`examples/full/compose.yaml`](examples/full/compose.yaml) demonstrates the complete supported configuration.
