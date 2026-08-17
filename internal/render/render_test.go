@@ -13,7 +13,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-func TestLoadCanonicalAcceptsExplicitLocalBuildImage(t *testing.T) {
+func TestLoadCanonicalInternalizesBuildImage(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -32,11 +32,17 @@ services:
 	if len(app.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(app.Services))
 	}
-	if app.Services[0].Image != "keel.local/api:latest" {
-		t.Fatalf("expected local image reference to be preserved, got %q", app.Services[0].Image)
+	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0" {
+		t.Fatalf("expected build image reference to be internalized, got %q", app.Services[0].Image)
 	}
-	if !app.Services[0].UsesBuild {
+	if app.Services[0].Build == nil {
 		t.Fatalf("expected service to retain build metadata")
+	}
+	if app.Services[0].Build.Config["context"] != "/workspace" {
+		t.Fatalf("expected canonical build context, got %#v", app.Services[0].Build.Config)
+	}
+	if got := app.Services[0].Build.ReadPaths; len(got) != 1 || got[0] != "/workspace" {
+		t.Fatalf("expected exact local build read path, got %#v", got)
 	}
 }
 
@@ -130,7 +136,7 @@ services:
 	}
 }
 
-func TestLoadCanonicalRejectsBuildWithoutExplicitImage(t *testing.T) {
+func TestLoadCanonicalAcceptsBuildWithoutExplicitImage(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -141,12 +147,200 @@ services:
       dockerfile: Dockerfile
 `)
 
-	_, err := compose.LoadCanonicalYAML(input)
-	if err == nil {
-		t.Fatalf("expected build without image to fail")
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("expected build without image to be supported, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "[build-image-unresolved]") {
-		t.Fatalf("expected build image validation error, got %v", err)
+	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0" {
+		t.Fatalf("expected generated internal image, got %q", got)
+	}
+}
+
+func TestWritePackageGeneratesBuildWorkspaceAndImageArchives(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:dev
+    build:
+      context: /workspace/api
+      dockerfile: Containerfile
+      args:
+        MODE: release
+      tags:
+        - ghcr.io/acme/extra:dev
+      additional_contexts:
+        base: service:base_image
+      secrets:
+        - build_token
+  base_image:
+    build:
+      context: /workspace/base
+      platforms:
+        - linux/arm64
+  cache:
+    image: redis:7.4-alpine
+secrets:
+  build_token:
+    file: /workspace/build-token.txt
+x-uds:
+  package:
+    version: 1.2.3
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
+	services := mustMap(t, buildCompose["services"])
+	api := mustMap(t, services["api"])
+	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3" {
+		t.Fatalf("expected internal API image, got %#v", got)
+	}
+	apiBuild := mustMap(t, api["build"])
+	if got := apiBuild["context"]; got != "/workspace/api" {
+		t.Fatalf("expected canonical context, got %#v", got)
+	}
+	if _, exists := apiBuild["tags"]; exists {
+		t.Fatalf("did not expect user-controlled build tags in generated build file: %#v", apiBuild)
+	}
+	contexts := mustMap(t, apiBuild["additional_contexts"])
+	if got := contexts["base"]; got != "service:base-image" {
+		t.Fatalf("expected normalized service build context, got %#v", got)
+	}
+	if _, exists := mustMap(t, buildCompose["secrets"])["build_token"]; !exists {
+		t.Fatalf("expected referenced build secret in generated build file")
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"imageArchives:",
+		"path: image-archives/api.tar",
+		"zarf.internal/demo-api:1.2.3",
+		"path: image-archives/base-image.tar",
+		"zarf.internal/demo-base-image:1.2.3",
+		"redis:7.4-alpine",
+		"docker buildx bake",
+		"fs.read=/workspace",
+		"fs.read=/workspace/api",
+		"fs.read=/workspace/base",
+		"api.platform+=linux/amd64",
+		"api.platform+=linux/arm64",
+		"api.output=type=oci,dest=image-archives/api.tar",
+		"base-image.output=type=oci,dest=image-archives/base-image.tar",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "base-image.platform+=") {
+		t.Fatalf("did not expect default platforms to override declared build platforms\n%s", zarfConfig)
+	}
+	for _, want := range []string{
+		`docker_context="$(docker context show)"`,
+		`builder_name='compose-bridge-uds-'"$builder_context"`,
+		`docker buildx create --name "$builder_name" --driver docker-container "$docker_context"`,
+		`--builder "$builder_name"`,
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected context-scoped Buildx builder command %q\n%s", want, zarfConfig)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	if !strings.Contains(deployment, "imagePullPolicy: Always") {
+		t.Fatalf("expected built image to always pull from the Zarf registry\n%s", deployment)
+	}
+}
+
+func TestWritePackageWithoutBuildOmitsBuildWorkspace(t *testing.T) {
+	t.Parallel()
+
+	app, err := compose.LoadCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`))
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "build.compose.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect build.compose.yaml without build services")
+	}
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, unexpected := range []string{"imageArchives:", "actions:", "docker buildx"} {
+		if strings.Contains(zarfConfig, unexpected) {
+			t.Fatalf("did not expect %q without build services\n%s", unexpected, zarfConfig)
+		}
+	}
+}
+
+func TestWritePackageSeparatesBuildServicesFromImageServices(t *testing.T) {
+	t.Parallel()
+
+	app, err := compose.LoadCanonicalYAML([]byte(`name: demo
+services:
+  server:
+    build:
+      context: /workspace/server
+  cache:
+    image: redis:7-alpine
+`))
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	components, ok := zarfConfig["components"].([]any)
+	if !ok || len(components) != 1 {
+		t.Fatalf("expected one Zarf component, got %#v", zarfConfig["components"])
+	}
+	component := mustMap(t, components[0])
+
+	images, ok := component["images"].([]any)
+	if !ok || len(images) != 1 || images[0] != "redis:7-alpine" {
+		t.Fatalf("expected only the prebuilt image under images, got %#v", component["images"])
+	}
+
+	archives, ok := component["imageArchives"].([]any)
+	if !ok || len(archives) != 1 {
+		t.Fatalf("expected one image archive, got %#v", component["imageArchives"])
+	}
+	archive := mustMap(t, archives[0])
+	if archive["path"] != "image-archives/server.tar" {
+		t.Fatalf("expected server image archive path, got %#v", archive["path"])
+	}
+	archiveImages, ok := archive["images"].([]any)
+	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:0.1.0" {
+		t.Fatalf("expected only the built image under imageArchives, got %#v", archive["images"])
+	}
+
+	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
+	buildServices := mustMap(t, buildCompose["services"])
+	if len(buildServices) != 1 {
+		t.Fatalf("expected only one service in the build workspace, got %#v", buildServices)
+	}
+	if _, ok := buildServices["server"]; !ok {
+		t.Fatalf("expected server in the build workspace, got %#v", buildServices)
+	}
+	if _, ok := buildServices["cache"]; ok {
+		t.Fatalf("did not expect the prebuilt cache service in the build workspace")
 	}
 }
 

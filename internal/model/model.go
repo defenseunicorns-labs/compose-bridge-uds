@@ -105,10 +105,18 @@ type Package struct {
 	CABundle        map[string]any
 }
 
+type BuildDefinition struct {
+	// Config keeps the canonical Compose build fields as generic YAML data so
+	// new Compose build options can pass through without duplicating its schema.
+	Config map[string]any
+	// ReadPaths lists host directories Buildx Bake must be allowed to access.
+	ReadPaths []string
+}
+
 type Service struct {
 	Name         string
 	Image        string
-	UsesBuild    bool
+	Build        *BuildDefinition
 	Ports        []Port
 	Networks     []string
 	Env          []EnvVar
@@ -131,11 +139,12 @@ type Service struct {
 }
 
 type App struct {
-	Package  Package
-	Services []Service
-	Volumes  map[string]Volume
-	Secrets  map[string]Secret
-	Configs  map[string]Config
+	Package      Package
+	Services     []Service
+	Volumes      map[string]Volume
+	Secrets      map[string]Secret
+	Configs      map[string]Config
+	BuildSecrets map[string]any
 }
 
 func (s Service) PrimaryPort() (Port, error) {

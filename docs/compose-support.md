@@ -5,7 +5,7 @@
 | Compose key                                                      | Behavior                                                                                                                                                                                                                                                                        |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `image:`                                                         | Container image reference.                                                                                                                                                                                                                                                      |
-| `build:`                                                         | Build from a Dockerfile. Run `docker compose build` before `docker compose bridge convert`; the bridge conversion does not build images.                                                                                                                                        |
+| `build:`                                                         | Preserved as a generated Buildx Bake definition. `zarf package create` builds the image and adds its OCI archive to the package.                                                                                                                                                |
 | Named `volumes:`                                                 | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default).                                                                                                                                                                                                        |
 | `secrets:`                                                       | Converted to Kubernetes Secrets.                                                                                                                                                                                                                                                |
 | `configs:`                                                       | Converted to ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                              |
@@ -25,15 +25,34 @@ External configs are not supported. A `configs:` entry must define inline `conte
 
 ## Local Dockerfile builds
 
-Docker Compose Bridge does not run the Compose build step. If a service uses `build:` with a local Dockerfile, build the Compose project before running the bridge conversion so the image exists locally:
+Docker Compose v5.5.0 or later can pass a build-only service through Compose Bridge without trying to pull Compose's default image name. For earlier Compose versions, run `docker compose build` before conversion so that default image exists locally:
+
+### Docker Compose versions earlier than v5.5.0
 
 ```sh
 cd examples/full
 docker compose build
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+zarf package create out
 ```
 
-When `image:` is omitted, Compose assigns a default image name based on the project and service, such as `hello-world-server` for `examples/full`. Compose Bridge resolves that built image before invoking the transformation. Declare `image:` when the generated Helm chart and `zarf.yaml` need a stable or registry-backed reference.
+### Docker Compose versions v5.5.0 or later
+
+```sh
+cd examples/full
+docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+zarf package create out
+```
+
+With Docker Compose versions earlier than v5.5.0, the `docker compose build` step is required to unblock conversion; Zarf still runs the generated Buildx Bake build during `zarf package create`.
+
+The bridge assigns each build service a package-local image reference, writes the canonical build configuration to `out/build.compose.yaml`, and adds Zarf `onCreate` actions that run `docker buildx bake`. The build produces OCI archives under `out/image-archives/`, which Zarf includes through `imageArchives`. User-provided build tags do not become additional package image references.
+
+Local contexts, Dockerfiles, additional contexts, build-secret files, and SSH paths are passed to Buildx as explicit filesystem read allowances. 
+
+Build services default to `linux/amd64` and `linux/arm64`; a Compose `build.platforms` declaration overrides that default for the service.
+
+Deferred builds cannot automatically determine what to expose by examining the Dockerfile because the image is built after Compose Bridge conversion.
 
 ## Configuration notes
 
