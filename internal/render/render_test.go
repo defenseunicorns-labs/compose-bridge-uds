@@ -990,6 +990,10 @@ func TestWritePackageSanitizesComposePortNames(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: port-name-demo
+x-uds:
+  monitor:
+    - service: web
+      targetPort: 8080
 services:
   web:
     image: ghcr.io/acme/web:1.0.0
@@ -1013,7 +1017,12 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-web.yaml"))
 	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-web.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	if !strings.Contains(deployment, "name: web-ui") {
+		t.Fatalf("expected deployment port name to preserve the sanitized Compose name\n%s", deployment)
+	}
 	for _, want := range []string{
 		"name: web-ui",
 		"name: port-9090-tcp",
@@ -1021,6 +1030,38 @@ services:
 		if !strings.Contains(service, want) {
 			t.Fatalf("expected service port name %q\n%s", want, service)
 		}
+	}
+	if !strings.Contains(udsPackage, "portName: web-ui") {
+		t.Fatalf("expected monitor port name to preserve the sanitized Compose name\n%s", udsPackage)
+	}
+}
+
+func TestWritePackageUsesNeutralUnnamedPortNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: unnamed-port-demo
+services:
+  db:
+    image: postgres:18.4-bookworm
+    expose:
+      - "5432"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-db.yaml"))
+	if !strings.Contains(service, "name: port-5432-tcp") {
+		t.Fatalf("expected neutral service port name\n%s", service)
+	}
+	if strings.Contains(service, "name: http") {
+		t.Fatalf("did not expect an unnamed TCP port to be labeled HTTP\n%s", service)
 	}
 }
 
@@ -1243,7 +1284,7 @@ services:
 		"selector:",
 		"podSelector:",
 		"app.kubernetes.io/name: api",
-		"portName: http",
+		"portName: port-9090-tcp",
 		"targetPort: 9090",
 		"path: /metrics",
 		"kind: ServiceMonitor",
@@ -1291,7 +1332,7 @@ services:
 	for _, want := range []string{
 		"kind: PodMonitor",
 		"path: /custom/metrics",
-		"portName: http",
+		"portName: port-9090-tcp",
 		"targetPort: 9090",
 		"authorization:",
 		"type: Bearer",
@@ -1451,7 +1492,7 @@ func TestMonitorRejectsMismatchedPortNameAndTargetPort(t *testing.T) {
 x-uds:
   monitor:
     - service: api
-      portName: http
+      portName: port-8080-tcp
       targetPort: 9090
 services:
   api:
@@ -1470,7 +1511,7 @@ services:
 	if err == nil {
 		t.Fatalf("expected WritePackage() to fail for mismatched monitor port fields")
 	}
-	if !strings.Contains(err.Error(), `portName "http" resolves to 8080, but targetPort is 9090`) {
+	if !strings.Contains(err.Error(), `portName "port-8080-tcp" resolves to 8080, but targetPort is 9090`) {
 		t.Fatalf("expected mismatched port error, got %v", err)
 	}
 }
