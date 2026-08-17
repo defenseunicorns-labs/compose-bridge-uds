@@ -67,7 +67,7 @@ func validateCompatibility(project types.Project, raw map[string]any) error {
 			issues = append(issues, CompatibilityIssue{
 				Code:        "image-required",
 				Path:        path + ".image",
-				Message:     "the service has no container image or build definition",
+				Message:     "the service has no container image",
 				Remediation: "declare `image:` or `build:`",
 			})
 		}

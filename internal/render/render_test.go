@@ -218,9 +218,6 @@ x-uds:
 	if _, exists := mustMap(t, buildCompose["secrets"])["build_token"]; !exists {
 		t.Fatalf("expected referenced build secret in generated build file")
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "secret-build-token.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("did not expect build-only secret to generate a Kubernetes Secret")
-	}
 
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
 	for _, want := range []string{
@@ -246,9 +243,6 @@ x-uds:
 	if strings.Contains(zarfConfig, "base-image.platform+=") {
 		t.Fatalf("did not expect default platforms to override declared build platforms\n%s", zarfConfig)
 	}
-	if strings.Contains(zarfConfig, "BUILD_TOKEN") {
-		t.Fatalf("did not expect build-only secret to generate a deploy-time variable\n%s", zarfConfig)
-	}
 	for _, want := range []string{
 		`docker_context="$(docker context show)"`,
 		`builder_name='compose-bridge-uds-'"$builder_context"`,
@@ -263,43 +257,6 @@ x-uds:
 	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
 	if !strings.Contains(deployment, "imagePullPolicy: Always") {
 		t.Fatalf("expected built image to always pull from the Zarf registry\n%s", deployment)
-	}
-}
-
-func TestWritePackageKeepsSharedBuildSecretAtRuntime(t *testing.T) {
-	t.Parallel()
-
-	app, err := compose.LoadCanonicalYAML([]byte(`name: demo
-services:
-  api:
-    build:
-      context: /workspace/api
-      secrets:
-        - shared_token
-    secrets:
-      - shared_token
-secrets:
-  shared_token:
-    file: /workspace/shared-token.txt
-`))
-	if err != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", err)
-	}
-	outDir := t.TempDir()
-	if err := render.WritePackage(outDir, app); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-
-	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
-	if _, exists := mustMap(t, buildCompose["secrets"])["shared_token"]; !exists {
-		t.Fatalf("expected shared secret in generated build file")
-	}
-	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "secret-shared-token.yaml")); err != nil {
-		t.Fatalf("expected shared secret to generate a Kubernetes Secret: %v", err)
-	}
-	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
-	if !strings.Contains(zarfConfig, "SHARED_TOKEN") {
-		t.Fatalf("expected shared secret to generate a deploy-time variable\n%s", zarfConfig)
 	}
 }
 

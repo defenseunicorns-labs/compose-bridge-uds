@@ -177,12 +177,7 @@ func WritePackage(root string, app model.App) error {
 
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
-		if svc.Build == nil {
-			images = append(images, svc.Image)
-		}
-		if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
-			images = append(images, model.DependencyInitImage)
-		}
+		images = append(images, buildComponentImages(svc, servicePorts)...)
 	}
 
 	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, dedupeStrings(images), hasSecrets); err != nil {
@@ -1095,6 +1090,17 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 		})
 	}
 	return containers
+}
+
+func buildComponentImages(svc model.Service, servicePorts map[string]int) []string {
+	images := []string{}
+	if svc.Build == nil {
+		images = append(images, svc.Image)
+	}
+	if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
+		images = append(images, model.DependencyInitImage)
+	}
+	return dedupeStrings(images)
 }
 
 func buildEnv(env []model.EnvVar) []envVar {

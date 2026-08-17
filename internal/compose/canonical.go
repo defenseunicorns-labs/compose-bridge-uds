@@ -75,10 +75,6 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 
 func loadWorkingDir(sourcePath string) string {
 	if sourcePath != "" {
-		dir, err := filepath.Abs(filepath.Dir(sourcePath))
-		if err == nil {
-			return dir
-		}
 		return filepath.Dir(sourcePath)
 	}
 	wd, err := os.Getwd()
@@ -145,8 +141,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	}
 
 	services := make([]model.Service, 0, len(keys))
-	buildSecretNames := map[string]struct{}{}
-	serviceSecretNames := map[string]struct{}{}
+	buildSecrets := map[string]any{}
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
@@ -167,9 +162,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		secretRefs, err := parseServiceSecrets(rawSvc.Secrets, secretAliases)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q secrets: %w", key, err)
-		}
-		for _, secret := range secretRefs {
-			serviceSecretNames[secret.Source] = struct{}{}
 		}
 		configRefs, err := parseServiceConfigs(rawSvc.Configs, configAliases)
 		if err != nil {
@@ -193,9 +185,15 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 				ReadPaths: buildReadPaths(rawSvc.Build, project.Secrets),
 			}
 			for _, secret := range rawSvc.Build.Secrets {
-				if source := strings.TrimSpace(secret.Source); source != "" {
-					buildSecretNames[source] = struct{}{}
+				source := strings.TrimSpace(secret.Source)
+				if source == "" {
+					continue
 				}
+				definition, ok := canonicalSecrets[source]
+				if !ok {
+					return model.App{}, fmt.Errorf("build secret %q is missing from the canonical Compose model", source)
+				}
+				buildSecrets[source] = definition
 			}
 		}
 
@@ -223,24 +221,6 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			Resources:    parseResources(rawSvc.Deploy),
 			Profiles:     normalizeProfiles(rawSvc.Profiles),
 		})
-	}
-
-	buildSecrets := map[string]any{}
-	for name := range buildSecretNames {
-		definition, ok := canonicalSecrets[name]
-		if !ok {
-			return model.App{}, fmt.Errorf("build secret %q is missing from the canonical Compose model", name)
-		}
-		buildSecrets[name] = definition
-		// Build-only secrets are inputs to Buildx, not secrets used by the
-		// deployed application. Keep secrets that are used in both places.
-		secretName, ok := resolveAlias(secretAliases, name)
-		if !ok {
-			return model.App{}, fmt.Errorf("build secret %q is missing from the Compose model", name)
-		}
-		if _, usedByService := serviceSecretNames[secretName]; !usedByService {
-			delete(secrets, secretName)
-		}
 	}
 
 	return model.App{
