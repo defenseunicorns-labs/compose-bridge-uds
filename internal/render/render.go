@@ -23,11 +23,11 @@ const (
 	// root) referenced by the component's chart valuesFiles. Only written when
 	// the package has secrets.
 	zarfValuesRel = "values/values.yaml"
-	// buildComposeRel is the temporary Compose build definition consumed by
+	// buildComposeFileName is the generated Compose build definition consumed by
 	// Buildx Bake during Zarf package creation.
-	buildComposeRel     = "build.compose.yaml"
-	imageArchiveDir     = "image-archives"
-	buildxBuilderPrefix = "compose-bridge-uds"
+	buildComposeFileName = "build.compose.yaml"
+	imageArchiveDir      = "image-archives"
+	buildxBuilderPrefix  = "compose-bridge-uds"
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
@@ -170,7 +170,7 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	if hasBuildServices(app) {
-		if err := writeBuildCompose(filepath.Join(root, buildComposeRel), app); err != nil {
+		if err := writeBuildCompose(filepath.Join(root, buildComposeFileName), app); err != nil {
 			return err
 		}
 	}
@@ -245,7 +245,7 @@ func buildCreateActions(app model.App) *zarfComponentActions {
 	arguments := []string{
 		"docker buildx bake",
 		`  --builder "$builder_name"`,
-		"  --file " + shellQuote(buildComposeRel),
+		"  --file " + shellQuote(buildComposeFileName),
 		"  --progress plain",
 	}
 	readPaths := map[string]struct{}{}

@@ -115,7 +115,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	if err != nil {
 		return model.App{}, err
 	}
-	secrets, secretAliases, err := normalizeTopLevelSecrets(project.Secrets)
+	declaredSecrets, secretAliases, err := normalizeTopLevelSecrets(project.Secrets)
 	if err != nil {
 		return model.App{}, err
 	}
@@ -146,7 +146,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 
 	services := make([]model.Service, 0, len(keys))
 	buildSecretNames := map[string]struct{}{}
-	runtimeSecretNames := map[string]struct{}{}
+	secretNames := map[string]struct{}{}
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
@@ -169,7 +169,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			return model.App{}, fmt.Errorf("service %q secrets: %w", key, err)
 		}
 		for _, secret := range secretRefs {
-			runtimeSecretNames[secret.Source] = struct{}{}
+			secretNames[secret.Source] = struct{}{}
 		}
 		configRefs, err := parseServiceConfigs(rawSvc.Configs, configAliases)
 		if err != nil {
@@ -233,16 +233,16 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		}
 		buildSecrets[name] = definition
 	}
-	runtimeSecrets := map[string]model.Secret{}
-	for name := range runtimeSecretNames {
-		runtimeSecrets[name] = secrets[name]
+	secrets := map[string]model.Secret{}
+	for name := range secretNames {
+		secrets[name] = declaredSecrets[name]
 	}
 
 	return model.App{
 		Package:      packageCfg,
 		Services:     services,
 		Volumes:      volumes,
-		Secrets:      runtimeSecrets,
+		Secrets:      secrets,
 		Configs:      configs,
 		BuildSecrets: buildSecrets,
 	}, nil
