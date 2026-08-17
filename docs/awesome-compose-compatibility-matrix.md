@@ -18,10 +18,10 @@ the tested baseline and Results table below.
 <!-- matrix-baseline:start -->
 | Input | Value |
 |---|---|
-| Compose Bridge | `bff5ab4c3e197955983cb15f72e5c34b24a7cb50` |
+| Compose Bridge | `fc9f1dc89cffbbc4c3c9cff436250cdb0281e4b3` |
 | Awesome Compose | [`30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562`](https://github.com/docker/awesome-compose/commit/30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562) |
-| Docker Compose | `5.1.2` |
-| Go | `go1.26.5 darwin/arm64` |
+| Docker Compose | `5.5.0` |
+| Go | `go1.26.4 darwin/arm64` |
 
 All 39 files canonicalized. The bridge supported and rendered 30 models and rejected 9 with diagnostics.
 <!-- matrix-baseline:end -->
