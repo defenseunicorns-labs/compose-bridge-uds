@@ -35,7 +35,9 @@ zarf package create out
 
 The bridge assigns each build service a package-local image reference, writes the canonical build configuration to `out/build.compose.yaml`, and adds Zarf `onCreate` actions that run `docker buildx bake`. The build produces OCI archives under `out/image-archives/`, which Zarf includes through `imageArchives`. User-provided build tags do not become additional package image references.
 
-Local contexts, Dockerfiles, additional contexts, build-secret files, and SSH paths are passed to Buildx as explicit filesystem read allowances. Build services default to `linux/amd64` and `linux/arm64`; a Compose `build.platforms` declaration overrides that default for the service.
+Local contexts, Dockerfiles, additional contexts, build-secret files, and SSH paths are passed to Buildx as explicit filesystem read allowances. 
+
+Build services default to `linux/amd64` and `linux/arm64`; a Compose `build.platforms` declaration overrides that default for the service.
 
 Deferred builds cannot automatically determine what to expose by examining the Dockerfile because the image is built after Compose Bridge conversion.
 
