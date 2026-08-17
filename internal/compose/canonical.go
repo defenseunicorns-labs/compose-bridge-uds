@@ -115,7 +115,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 	if err != nil {
 		return model.App{}, err
 	}
-	declaredSecrets, secretAliases, err := normalizeTopLevelSecrets(project.Secrets)
+	secrets, secretAliases, err := normalizeTopLevelSecrets(project.Secrets)
 	if err != nil {
 		return model.App{}, err
 	}
@@ -146,7 +146,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 
 	services := make([]model.Service, 0, len(keys))
 	buildSecretNames := map[string]struct{}{}
-	secretNames := map[string]struct{}{}
+	serviceSecretNames := map[string]struct{}{}
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
@@ -169,7 +169,7 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			return model.App{}, fmt.Errorf("service %q secrets: %w", key, err)
 		}
 		for _, secret := range secretRefs {
-			secretNames[secret.Source] = struct{}{}
+			serviceSecretNames[secret.Source] = struct{}{}
 		}
 		configRefs, err := parseServiceConfigs(rawSvc.Configs, configAliases)
 		if err != nil {
@@ -232,10 +232,15 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 			return model.App{}, fmt.Errorf("build secret %q is missing from the canonical Compose model", name)
 		}
 		buildSecrets[name] = definition
-	}
-	secrets := map[string]model.Secret{}
-	for name := range secretNames {
-		secrets[name] = declaredSecrets[name]
+		// Build-only secrets are inputs to Buildx, not secrets used by the
+		// deployed application. Keep secrets that are used in both places.
+		secretName, ok := resolveAlias(secretAliases, name)
+		if !ok {
+			return model.App{}, fmt.Errorf("build secret %q is missing from the Compose model", name)
+		}
+		if _, usedByService := serviceSecretNames[secretName]; !usedByService {
+			delete(secrets, secretName)
+		}
 	}
 
 	return model.App{
