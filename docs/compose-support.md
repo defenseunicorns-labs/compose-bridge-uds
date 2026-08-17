@@ -25,13 +25,26 @@ External configs are not supported. A `configs:` entry must define inline `conte
 
 ## Local Dockerfile builds
 
-Docker Compose v5.5.0 or later can pass a build-only service through Compose Bridge without trying to pull Compose's default image name. This means a service can use `build:` without declaring `image:`:
+Docker Compose v5.5.0 or later can pass a build-only service through Compose Bridge without trying to pull Compose's default image name. For earlier Compose versions, run `docker compose build` before conversion so that default image exists locally:
+
+### Docker Compose versions earlier than v5.5.0
+
+```sh
+cd examples/full
+docker compose build
+docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+zarf package create out
+```
+
+### Docker Compose versions v5.5.0 or later
 
 ```sh
 cd examples/full
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 zarf package create out
 ```
+
+With Docker Compose versions earlier than v5.5.0, the `docker compose build` step is required to unblock conversion; Zarf still runs the generated Buildx Bake build during `zarf package create`.
 
 The bridge assigns each build service a package-local image reference, writes the canonical build configuration to `out/build.compose.yaml`, and adds Zarf `onCreate` actions that run `docker buildx bake`. The build produces OCI archives under `out/image-archives/`, which Zarf includes through `imageArchives`. User-provided build tags do not become additional package image references.
 
