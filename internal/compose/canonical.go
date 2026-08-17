@@ -75,6 +75,10 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 
 func loadWorkingDir(sourcePath string) string {
 	if sourcePath != "" {
+		dir, err := filepath.Abs(filepath.Dir(sourcePath))
+		if err == nil {
+			return dir
+		}
 		return filepath.Dir(sourcePath)
 	}
 	wd, err := os.Getwd()
@@ -135,8 +139,14 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		registerAlias(serviceAliases, key, normalized)
 		registerAlias(serviceAliases, normalized, normalized)
 	}
+	canonicalServices, canonicalSecrets, err := canonicalBuildMaps(project)
+	if err != nil {
+		return model.App{}, err
+	}
 
 	services := make([]model.Service, 0, len(keys))
+	buildSecretNames := map[string]struct{}{}
+	runtimeSecretNames := map[string]struct{}{}
 
 	for _, key := range keys {
 		rawSvc := project.Services[key]
@@ -158,6 +168,9 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q secrets: %w", key, err)
 		}
+		for _, secret := range secretRefs {
+			runtimeSecretNames[secret.Source] = struct{}{}
+		}
 		configRefs, err := parseServiceConfigs(rawSvc.Configs, configAliases)
 		if err != nil {
 			return model.App{}, fmt.Errorf("service %q configs: %w", key, err)
@@ -168,12 +181,28 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		}
 
 		image := strings.TrimSpace(rawSvc.Image)
-		usesBuild := rawSvc.Build != nil
+		var build *model.BuildDefinition
+		if rawSvc.Build != nil {
+			buildConfig, err := canonicalBuildConfig(canonicalServices, key, serviceAliases)
+			if err != nil {
+				return model.App{}, err
+			}
+			image = builtImageReference(packageCfg, serviceName)
+			build = &model.BuildDefinition{
+				Config:    buildConfig,
+				ReadPaths: buildReadPaths(rawSvc.Build, project.Secrets),
+			}
+			for _, secret := range rawSvc.Build.Secrets {
+				if source := strings.TrimSpace(secret.Source); source != "" {
+					buildSecretNames[source] = struct{}{}
+				}
+			}
+		}
 
 		services = append(services, model.Service{
 			Name:         serviceName,
 			Image:        image,
-			UsesBuild:    usesBuild,
+			Build:        build,
 			Ports:        ports,
 			Networks:     networks,
 			Env:          parseEnvironment(rawSvc.Environment),
@@ -196,13 +225,141 @@ func loadProject(project types.Project, raw map[string]any) (model.App, error) {
 		})
 	}
 
+	buildSecrets := map[string]any{}
+	for name := range buildSecretNames {
+		definition, ok := canonicalSecrets[name]
+		if !ok {
+			return model.App{}, fmt.Errorf("build secret %q is missing from the canonical Compose model", name)
+		}
+		buildSecrets[name] = definition
+	}
+	runtimeSecrets := map[string]model.Secret{}
+	for name := range runtimeSecretNames {
+		runtimeSecrets[name] = secrets[name]
+	}
+
 	return model.App{
-		Package:  packageCfg,
-		Services: services,
-		Volumes:  volumes,
-		Secrets:  secrets,
-		Configs:  configs,
+		Package:      packageCfg,
+		Services:     services,
+		Volumes:      volumes,
+		Secrets:      runtimeSecrets,
+		Configs:      configs,
+		BuildSecrets: buildSecrets,
 	}, nil
+}
+
+func canonicalBuildMaps(project types.Project) (map[string]any, map[string]any, error) {
+	data, err := project.MarshalYAML()
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal canonical Compose build model: %w", err)
+	}
+	var canonical map[string]any
+	if err := yamlv3.Unmarshal(data, &canonical); err != nil {
+		return nil, nil, fmt.Errorf("decode canonical Compose build model: %w", err)
+	}
+	services, _ := asMap(canonical["services"])
+	secrets, _ := asMap(canonical["secrets"])
+	return services, secrets, nil
+}
+
+func canonicalBuildConfig(services map[string]any, serviceName string, aliases map[string]string) (map[string]any, error) {
+	service, ok := asMap(services[serviceName])
+	if !ok {
+		return nil, fmt.Errorf("service %q is missing from the canonical Compose build model", serviceName)
+	}
+	build, ok := asMap(service["build"])
+	if !ok {
+		return nil, fmt.Errorf("service %q has no canonical Compose build definition", serviceName)
+	}
+
+	// Compose build.tags would add extra, user-controlled references to the OCI
+	// archive. Built services always use the bridge-controlled internal image.
+	delete(build, "tags")
+	if contexts, ok := asMap(build["additional_contexts"]); ok {
+		for name, value := range contexts {
+			reference, ok := value.(string)
+			if !ok || !strings.HasPrefix(reference, "service:") {
+				continue
+			}
+			if resolved, ok := resolveAlias(aliases, strings.TrimPrefix(reference, "service:")); ok {
+				contexts[name] = "service:" + resolved
+			}
+		}
+	}
+	return build, nil
+}
+
+func builtImageReference(pkg model.Package, serviceName string) string {
+	return fmt.Sprintf("zarf.internal/%s-%s:%s", pkg.Name, serviceName, sanitizeImageTag(pkg.Version))
+}
+
+func buildReadPaths(build *types.BuildConfig, secrets types.Secrets) []string {
+	paths := map[string]struct{}{}
+	addBuildReadPath(paths, build.Context, false)
+	for _, context := range build.AdditionalContexts {
+		addBuildReadPath(paths, context, false)
+	}
+	if build.Dockerfile != "" {
+		switch {
+		case filepath.IsAbs(build.Dockerfile):
+			addBuildReadPath(paths, build.Dockerfile, true)
+		case isLocalBuildPath(build.Context):
+			addBuildReadPath(paths, filepath.Join(build.Context, build.Dockerfile), true)
+		}
+	}
+	for _, secret := range build.Secrets {
+		if definition, ok := secrets[secret.Source]; ok {
+			addBuildReadPath(paths, definition.File, true)
+		}
+	}
+	for _, ssh := range build.SSH {
+		addBuildReadPath(paths, ssh.Path, true)
+	}
+
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func addBuildReadPath(paths map[string]struct{}, value string, useParent bool) {
+	if !isLocalBuildPath(value) {
+		return
+	}
+	path := filepath.Clean(strings.TrimSpace(value))
+	if useParent {
+		path = filepath.Dir(path)
+	}
+	paths[path] = struct{}{}
+}
+
+func isLocalBuildPath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "://") {
+		return false
+	}
+	for _, prefix := range []string{"service:", "target:", "docker-image:", "oci-layout:"} {
+		if strings.HasPrefix(value, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+var invalidImageTagChars = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
+func sanitizeImageTag(value string) string {
+	tag := invalidImageTagChars.ReplaceAllString(strings.TrimSpace(value), "-")
+	tag = strings.TrimLeft(tag, ".-")
+	if tag == "" {
+		tag = "latest"
+	}
+	if len(tag) > 128 {
+		tag = tag[:128]
+	}
+	return tag
 }
 
 func parsePackageConfig(projectName string, raw map[string]any) (model.Package, error) {

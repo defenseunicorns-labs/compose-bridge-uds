@@ -23,6 +23,11 @@ const (
 	// root) referenced by the component's chart valuesFiles. Only written when
 	// the package has secrets.
 	zarfValuesRel = "values/values.yaml"
+	// buildComposeRel is the temporary Compose build definition consumed by
+	// Buildx Bake during Zarf package creation.
+	buildComposeRel     = "build.compose.yaml"
+	imageArchiveDir     = "image-archives"
+	buildxBuilderPrefix = "compose-bridge-uds"
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
@@ -164,9 +169,20 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
+	if hasBuildServices(app) {
+		if err := writeBuildCompose(filepath.Join(root, buildComposeRel), app); err != nil {
+			return err
+		}
+	}
+
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
-		images = append(images, buildComponentImages(svc, servicePorts)...)
+		if svc.Build == nil {
+			images = append(images, svc.Image)
+		}
+		if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
+			images = append(images, model.DependencyInitImage)
+		}
 	}
 
 	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, dedupeStrings(images), hasSecrets); err != nil {
@@ -174,6 +190,143 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	return nil
+}
+
+// Compose build workspace and Zarf package-creation actions.
+
+func hasBuildServices(app model.App) bool {
+	for _, svc := range app.Services {
+		if svc.Build != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func writeBuildCompose(path string, app model.App) error {
+	services := map[string]buildComposeService{}
+	for _, svc := range app.Services {
+		if svc.Build == nil {
+			continue
+		}
+		services[svc.Name] = buildComposeService{
+			Image: svc.Image,
+			Build: svc.Build.Config,
+		}
+	}
+	return writeYAMLFile(path, buildComposeFile{
+		Name:     app.Package.Name,
+		Services: services,
+		Secrets:  app.BuildSecrets,
+	})
+}
+
+func buildCreateActions(app model.App) *zarfComponentActions {
+	if !hasBuildServices(app) {
+		return nil
+	}
+	builderVariables := []string{
+		`docker_context="$(docker context show)"`,
+		`builder_context="$(printf '%s' "$docker_context" | tr -c '[:alnum:]_.-' '-')"`,
+		fmt.Sprintf(`builder_name=%s"$builder_context"`, shellQuote(buildxBuilderPrefix+"-")),
+	}
+	ensureBuilderLines := []string{
+		"set -eu",
+	}
+	ensureBuilderLines = append(ensureBuilderLines, builderVariables...)
+	ensureBuilderLines = append(ensureBuilderLines,
+		`if ! docker buildx inspect "$builder_name" >/dev/null 2>&1; then`,
+		`  docker buildx create --name "$builder_name" --driver docker-container "$docker_context"`,
+		"fi",
+	)
+	ensureBuilder := strings.Join(ensureBuilderLines, "\n")
+
+	archives := []string{}
+	arguments := []string{
+		"docker buildx bake",
+		`  --builder "$builder_name"`,
+		"  --file " + shellQuote(buildComposeRel),
+		"  --progress plain",
+	}
+	readPaths := map[string]struct{}{}
+	for _, svc := range app.Services {
+		if svc.Build == nil {
+			continue
+		}
+		for _, path := range svc.Build.ReadPaths {
+			readPaths[path] = struct{}{}
+		}
+	}
+	for _, path := range sortedStringSet(readPaths) {
+		arguments = append(arguments, "  --allow "+shellQuote("fs.read="+path))
+	}
+	targets := []string{}
+	for _, svc := range app.Services {
+		if svc.Build == nil {
+			continue
+		}
+		target := svc.Name
+		archive := filepath.ToSlash(filepath.Join(imageArchiveDir, svc.Name+".tar"))
+		archives = append(archives, shellQuote(archive))
+		if !buildDeclaresPlatforms(svc.Build.Config) {
+			arguments = append(arguments,
+				"  --set "+shellQuote(target+".platform+=linux/amd64"),
+				"  --set "+shellQuote(target+".platform+=linux/arm64"),
+			)
+		}
+		arguments = append(arguments, "  --set "+shellQuote(target+".output=type=oci,dest="+archive))
+		targets = append(targets, shellQuote(target))
+	}
+	arguments = append(arguments, "  "+strings.Join(targets, " "))
+	for i := 0; i < len(arguments)-1; i++ {
+		arguments[i] += " \\"
+	}
+
+	buildImageLines := []string{
+		"set -eu",
+	}
+	buildImageLines = append(buildImageLines, builderVariables...)
+	buildImageLines = append(buildImageLines,
+		"mkdir -p "+shellQuote(imageArchiveDir),
+		"rm -f "+strings.Join(archives, " "),
+		strings.Join(arguments, "\n"),
+	)
+	buildImages := strings.Join(buildImageLines, "\n")
+
+	return &zarfComponentActions{OnCreate: zarfComponentActionSet{Before: []zarfComponentAction{
+		{Description: "Ensure the Compose Bridge Buildx builder exists", Cmd: ensureBuilder},
+		{Description: "Build Compose images for the package", Cmd: buildImages},
+	}}}
+}
+
+func buildDeclaresPlatforms(config map[string]any) bool {
+	value, ok := config["platforms"]
+	if !ok || value == nil {
+		return false
+	}
+	switch platforms := value.(type) {
+	case []any:
+		return len(platforms) > 0
+	case []string:
+		return len(platforms) > 0
+	case string:
+		return strings.TrimSpace(platforms) != ""
+	default:
+		return true
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
@@ -259,13 +412,24 @@ func writeZarfConfig(path string, app model.App, secretVariables map[string]stri
 	if hasSecrets {
 		chart.ValuesFiles = []string{zarfValuesRel}
 	}
-	pkg.Components = append(pkg.Components, zarfComponent{
+	component := zarfComponent{
 		Name:        app.Package.Name,
 		Required:    true,
 		Description: fmt.Sprintf("Deploy %s", app.Package.Name),
 		Charts:      []zarfChart{chart},
 		Images:      dedupeStrings(images),
-	})
+		Actions:     buildCreateActions(app),
+	}
+	for _, svc := range app.Services {
+		if svc.Build == nil {
+			continue
+		}
+		component.ImageArchives = append(component.ImageArchives, zarfImageArchive{
+			Path:   filepath.ToSlash(filepath.Join(imageArchiveDir, svc.Name+".tar")),
+			Images: []string{svc.Image},
+		})
+	}
+	pkg.Components = append(pkg.Components, component)
 
 	data, err := yamlv3.Marshal(pkg)
 	if err != nil {
@@ -298,6 +462,9 @@ func buildDeployment(appName string, namespace string, svc model.Service, servic
 		LivenessProbe:   buildProbe(svc.Healthcheck),
 		Resources:       resources,
 		SecurityContext: securityContext,
+	}
+	if svc.Build != nil {
+		container.ImagePullPolicy = "Always"
 	}
 
 	podLabels := serviceSelector(svc.Name)
@@ -930,14 +1097,6 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 	return containers
 }
 
-func buildComponentImages(svc model.Service, servicePorts map[string]int) []string {
-	images := []string{svc.Image}
-	if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
-		images = append(images, model.DependencyInitImage)
-	}
-	return dedupeStrings(images)
-}
-
 func buildEnv(env []model.EnvVar) []envVar {
 	if len(env) == 0 {
 		return nil
@@ -1566,11 +1725,31 @@ type zarfVariable struct {
 }
 
 type zarfComponent struct {
-	Name        string      `yaml:"name"`
-	Required    bool        `yaml:"required"`
-	Description string      `yaml:"description,omitempty"`
-	Charts      []zarfChart `yaml:"charts,omitempty"`
-	Images      []string    `yaml:"images,omitempty"`
+	Name          string                `yaml:"name"`
+	Required      bool                  `yaml:"required"`
+	Description   string                `yaml:"description,omitempty"`
+	Charts        []zarfChart           `yaml:"charts,omitempty"`
+	Images        []string              `yaml:"images,omitempty"`
+	ImageArchives []zarfImageArchive    `yaml:"imageArchives,omitempty"`
+	Actions       *zarfComponentActions `yaml:"actions,omitempty"`
+}
+
+type zarfImageArchive struct {
+	Path   string   `yaml:"path"`
+	Images []string `yaml:"images"`
+}
+
+type zarfComponentActions struct {
+	OnCreate zarfComponentActionSet `yaml:"onCreate"`
+}
+
+type zarfComponentActionSet struct {
+	Before []zarfComponentAction `yaml:"before"`
+}
+
+type zarfComponentAction struct {
+	Description string `yaml:"description,omitempty"`
+	Cmd         string `yaml:"cmd"`
 }
 
 type zarfChart struct {
@@ -1579,6 +1758,17 @@ type zarfChart struct {
 	LocalPath   string   `yaml:"localPath"`
 	Version     string   `yaml:"version"`
 	ValuesFiles []string `yaml:"valuesFiles,omitempty"`
+}
+
+type buildComposeFile struct {
+	Name     string                         `yaml:"name"`
+	Services map[string]buildComposeService `yaml:"services"`
+	Secrets  map[string]any                 `yaml:"secrets,omitempty"`
+}
+
+type buildComposeService struct {
+	Image string         `yaml:"image"`
+	Build map[string]any `yaml:"build"`
 }
 
 // chartMetadata is the Chart.yaml written for the generated Helm chart.

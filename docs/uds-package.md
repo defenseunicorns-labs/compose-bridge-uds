@@ -2,6 +2,8 @@
 
 The bridge maps the [Compose Specification](https://compose-spec.io/) to Kubernetes resources and synthesizes a [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/) for network policy, monitoring, SSO, and trust-bundle distribution. It renders these resources as a Helm chart under `out/chart/`, referenced by `out/zarf.yaml` with `localPath: chart`.
 
+For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
+
 Secrets are rendered from chart values rather than baked into templates. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders, references it through `charts[].valuesFiles`, and retains the prompt and sensitivity settings in the Zarf package's `variables:`.
 
 ## Inferred behavior
