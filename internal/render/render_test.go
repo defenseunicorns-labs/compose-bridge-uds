@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
+	"defenseunicorns/uds-compose-bridge/internal/model"
 	"defenseunicorns/uds-compose-bridge/internal/render"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -761,8 +762,10 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	if !strings.Contains(configMap, "key: value") {
-		t.Fatalf("expected configmap to contain rendered config content")
+	for _, want := range []string{"key: value", `uds.dev/pod-reload: "true"`} {
+		if !strings.Contains(configMap, want) {
+			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
+		}
 	}
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
@@ -1986,6 +1989,228 @@ secrets:
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
 		}
+	}
+}
+
+func TestWritePackageExternalizesServiceEnvironmentThroughConfigMap(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    environment:
+      OPTIONAL_SETTING:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+  ui:
+    image: ghcr.io/acme/ui:1.0.0
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+    environment:
+      LOG_LEVEL: info
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	templatesDir := filepath.Join(outDir, "chart", "templates")
+	configMap := readFile(t, filepath.Join(templatesDir, "configmap-api-environment.yaml"))
+	for _, want := range []string{
+		"name: api-environment",
+		"uds.dev/pod-reload: \"true\"",
+		`POSTGRES_HOST: {{ index .Values.environment "api" "POSTGRES_HOST" | quote }}`,
+		`OPTIONAL_SETTING: {{ index .Values.environment "api" "OPTIONAL_SETTING" | quote }}`,
+		`POSTGRES_PASSWORD_FILE: {{ index .Values.environment "api" "POSTGRES_PASSWORD_FILE" | quote }}`,
+	} {
+		if !strings.Contains(configMap, want) {
+			t.Fatalf("expected environment ConfigMap to contain %q\n%s", want, configMap)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(templatesDir, "configmap-ui-environment.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no environment ConfigMap for ui, stat err = %v", err)
+	}
+	workerConfigMap := readFile(t, filepath.Join(templatesDir, "configmap-worker-environment.yaml"))
+	for _, want := range []string{
+		"name: worker-environment",
+		`LOG_LEVEL: {{ index .Values.environment "worker" "LOG_LEVEL" | quote }}`,
+	} {
+		if !strings.Contains(workerConfigMap, want) {
+			t.Fatalf("expected worker environment ConfigMap to contain %q\n%s", want, workerConfigMap)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(templatesDir, "deployment-api.yaml"))
+	for _, want := range []string{"envFrom:", "configMapRef:", "name: api-environment"} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
+		}
+	}
+	if strings.Contains(deployment, "POSTGRES_HOST") {
+		t.Fatalf("did not expect literal environment entries on the deployment\n%s", deployment)
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	apiValues := mustMap(t, mustMap(t, chartValues["environment"])["api"])
+	if got := apiValues["POSTGRES_HOST"]; got != "db" {
+		t.Fatalf("expected Compose host default, got %#v", got)
+	}
+	if got := apiValues["POSTGRES_PORT"]; got != "5432" {
+		t.Fatalf("expected Compose port default to remain a string, got %#v", got)
+	}
+	if got := apiValues["OPTIONAL_SETTING"]; got != "" {
+		t.Fatalf("expected unset Compose value to default to an empty string, got %#v", got)
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, want := range []string{
+		"###ZARF_VAR_API_POSTGRES_HOST###",
+		"###ZARF_VAR_API_OPTIONAL_SETTING###",
+		"###ZARF_VAR_API_POSTGRES_PORT###",
+		"###ZARF_VAR_API_POSTGRES_PASSWORD_FILE###",
+		"###ZARF_VAR_WORKER_LOG_LEVEL###",
+	} {
+		if !strings.Contains(zarfValues, want) {
+			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"name: API_POSTGRES_HOST",
+		"default: db",
+		"name: API_OPTIONAL_SETTING",
+		"default: \"\"",
+		"name: API_POSTGRES_PORT",
+		"default: \"5432\"",
+		"name: API_POSTGRES_PASSWORD_FILE",
+		"default: /run/secrets/postgres-password",
+		"name: WORKER_LOG_LEVEL",
+		"valuesFiles:",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "prompt: true") || strings.Contains(zarfConfig, "sensitive: true") {
+		t.Fatalf("ordinary environment variables must not prompt or be sensitive\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		app     model.App
+		wantErr string
+	}{
+		{
+			name: "non-portable environment name",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "DATABASE-URL", Value: "postgres://db"}},
+				}},
+			},
+			wantErr: `invalid environment variable "DATABASE-URL" on service "api"`,
+		},
+		{
+			name: "normalized environment variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{
+						{Name: "LOG_LEVEL", Value: "info"},
+						{Name: "log_level", Value: "debug"},
+					},
+				}},
+			},
+			wantErr: `generates Zarf variable "API_LOG_LEVEL", which conflicts with environment variable "LOG_LEVEL" on service "api"`,
+		},
+		{
+			name: "secret variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "TOKEN", Value: "not-a-secret"}},
+				}},
+				Secrets: map[string]model.Secret{"api-token": {Name: "api-token"}},
+			},
+			wantErr: `generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
+		},
+		{
+			name: "cross-service variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{
+					{
+						Name: "api", Image: "ghcr.io/acme/api:1.0.0",
+						Env: []model.EnvVar{{Name: "WORKER_LOG_LEVEL", Value: "info"}},
+					},
+					{
+						Name: "api-worker", Image: "ghcr.io/acme/worker:1.0.0",
+						Env: []model.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}},
+					},
+				},
+			},
+			wantErr: `generates Zarf variable "API_WORKER_LOG_LEVEL", which conflicts with environment variable "WORKER_LOG_LEVEL" on service "api"`,
+		},
+		{
+			name: "reserved environment variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "additional", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "NETWORK_ALLOW", Value: "custom"}},
+				}},
+			},
+			wantErr: `generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved package variable`,
+		},
+		{
+			name: "reserved secret variable collision",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Secrets: map[string]model.Secret{
+					"additional-network-allow": {Name: "additional-network-allow"},
+				},
+			},
+			wantErr: `compose secret "additional-network-allow" generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved package variable`,
+		},
+		{
+			name: "compose config map collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "LOG_LEVEL", Value: "info"}},
+				}},
+				Configs: map[string]model.Config{
+					"api-environment": {Name: "api-environment", Content: "config"},
+				},
+			},
+			wantErr: `environment ConfigMap "api-environment" for service "api" conflicts with compose config "api-environment"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := render.WritePackage(t.TempDir(), tt.app)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("WritePackage() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

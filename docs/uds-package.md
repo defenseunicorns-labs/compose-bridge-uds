@@ -4,7 +4,7 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
-Secrets are rendered from chart values rather than baked into templates. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders, references it through `charts[].valuesFiles`, and retains the prompt and sensitivity settings in the Zarf package's `variables:`.
+Secrets are rendered from chart values rather than baked into templates. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for both forms of deploy-time configuration, references it through `charts[].valuesFiles`, and retains their defaults, prompts, and sensitivity settings in the Zarf package's `variables:`.
 
 ## Inferred behavior
 

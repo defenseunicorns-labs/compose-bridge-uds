@@ -30,7 +30,7 @@ zarf package create out/
 zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 
-The transformation writes a Helm chart to `out/chart/`, a Zarf package definition to `out/zarf.yaml`, and `out/values/` when the Compose file declares secrets. Services with `build:` are built during `zarf package create` through a generated Buildx Bake definition. See [Compose support](docs/compose-support.md#local-dockerfile-builds) for Docker Compose version-specific conversion steps.
+The transformation writes a Helm chart to `out/chart/`, a Zarf package definition to `out/zarf.yaml`, and `out/values/` when the Compose file declares secrets or service environment variables. Services with `build:` are built during `zarf package create` through a generated Buildx Bake definition. See [Compose support](docs/compose-support.md#local-dockerfile-builds) for Docker Compose version-specific conversion steps.
 
 ## Documentation
 
