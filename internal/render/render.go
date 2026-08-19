@@ -36,6 +36,10 @@ const (
 )
 
 func WritePackage(root string, app model.App) error {
+	if err := validatePortNames(app.Services); err != nil {
+		return err
+	}
+
 	chartDir := filepath.Join(root, chartDirName)
 	templatesDir := filepath.Join(chartDir, "templates")
 	for _, dir := range []string{root, chartDir, templatesDir} {
@@ -1352,6 +1356,34 @@ func buildPortName(port model.Port) string {
 		return name
 	}
 	return fmt.Sprintf("port-%d-%s", port.Number, strings.ToLower(port.Protocol))
+}
+
+func validatePortNames(services []model.Service) error {
+	for _, svc := range services {
+		seen := make(map[string]model.Port, len(svc.Ports))
+		for _, port := range svc.Ports {
+			name := buildPortName(port)
+			if previous, exists := seen[name]; exists {
+				return fmt.Errorf(
+					"service %q ports %s and %s resolve to duplicate Kubernetes port name %q",
+					svc.Name,
+					formatPortNameSource(previous),
+					formatPortNameSource(port),
+					name,
+				)
+			}
+			seen[name] = port
+		}
+	}
+	return nil
+}
+
+func formatPortNameSource(port model.Port) string {
+	source := "unnamed"
+	if name := strings.TrimSpace(port.Name); name != "" {
+		source = fmt.Sprintf("name %q", name)
+	}
+	return fmt.Sprintf("%d/%s (%s)", port.Number, strings.ToLower(port.Protocol), source)
 }
 
 func sanitizePortName(raw string) string {
