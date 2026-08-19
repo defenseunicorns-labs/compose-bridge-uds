@@ -31,6 +31,12 @@ The bridge renders one `<service>-environment` ConfigMap for each service with e
 
 ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the portable `[A-Za-z_][A-Za-z0-9_]*` form. Generated Zarf variable names must also be unique across all services, secrets, and reserved package variables such as `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
+## Deploy-time network access
+
+Every generated package exposes the non-sensitive Zarf variable `ADDITIONAL_NETWORK_ALLOW`, defaulting to `[]`. Its value must be a YAML array of UDS network allow rules. The rules are appended to the generated UDS Package resource so operators can provide environment-specific ingress or egress without modifying the Compose application or rebuilding the package.
+
+Rules declared under `x-uds.network.allow` remain static package defaults for connectivity that Compose cannot express. Compose-derived and static rules are rendered first; `ADDITIONAL_NETWORK_ALLOW` entries are appended afterward.
+
 ## Local Dockerfile builds
 
 Docker Compose v5.5.0 or later can pass a build-only service through Compose Bridge without trying to pull Compose's default image name. For earlier Compose versions, run `docker compose build` before conversion so that default image exists locally:

@@ -4,12 +4,12 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
-Secrets are rendered from chart values rather than baked into templates. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for both forms of deploy-time configuration, references it through `charts[].valuesFiles`, and retains their defaults, prompts, and sensitivity settings in the Zarf package's `variables:`.
+Secrets are rendered from chart values rather than baked into templates. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. Every package also exposes `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.
 
 ## Inferred behavior
 
 - **Expose:** Services with published `ports:` are exposed on the tenant gateway. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
-- **Network allow:** Intra-namespace ingress and egress rules are always included so services in the namespace can communicate.
+- **Network allow:** Intra-namespace ingress and egress rules are always included so services in the namespace can communicate. Static `x-uds.network.allow` entries follow inferred rules, and deploy-time `ADDITIONAL_NETWORK_ALLOW` entries are appended last.
 - **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed.
 - **Policy exemptions:** Services requiring UDS policy exceptions produce `chart/templates/uds-exemption.yaml`.
 - **Monitoring:** Monitoring is opt-in through `x-uds.monitor[]`.
