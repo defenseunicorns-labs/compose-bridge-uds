@@ -8,8 +8,8 @@
 | `build:`                                                         | Preserved as a generated Buildx Bake definition. `zarf package create` builds the image and adds its OCI archive to the package.                                                                                                                                                |
 | Named `volumes:`                                                 | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default).                                                                                                                                                                                                        |
 | `secrets:`                                                       | Converted to Kubernetes Secrets.                                                                                                                                                                                                                                                |
-| `configs:`                                                       | Converted to ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                              |
-| `environment:`, `env_file:`                                      | Resolved by `docker compose config` and injected as container environment variables.                                                                                                                                                                                            |
+| `configs:`                                                       | Converted to reloadable ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                   |
+| `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
 | `depends_on:`                                                    | Converted to init-container wait logic using `netcat` (busybox). The dependency must declare a port.                                                                                                                                                                            |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
 | `container_name:`                                                | Ignored with a warning. Kubernetes Service and Deployment names come from the Compose service name.                                                                                                                                                                             |
@@ -22,6 +22,14 @@
 | `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `chart/templates/uds-exemption.yaml`.                                                                                                                 |
 
 External configs are not supported. A `configs:` entry must define inline `content:`.
+
+## Runtime configuration
+
+Every resolved service environment value becomes a non-sensitive Zarf variable named `<SERVICE>_<ENVIRONMENT_VARIABLE>`. The value resolved by `docker compose config`, including an empty value, is retained as its deployment default in `zarf.yaml`.
+
+The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. Direct Helm deployments do not provide that UDS reload behavior.
+
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the portable `[A-Za-z_][A-Za-z0-9_]*` form. Generated Zarf variable names must also be unique across all services, secrets, and reserved package variables such as `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
 ## Local Dockerfile builds
 
