@@ -993,6 +993,10 @@ func TestWritePackageSanitizesComposePortNames(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: port-name-demo
+x-uds:
+  monitor:
+    - service: web
+      targetPort: 8080
 services:
   web:
     image: ghcr.io/acme/web:1.0.0
@@ -1016,13 +1020,191 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-web.yaml"))
 	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-web.yaml"))
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	if !strings.Contains(deployment, "name: web-ui") {
+		t.Fatalf("expected deployment port name to preserve the sanitized Compose name\n%s", deployment)
+	}
 	for _, want := range []string{
 		"name: web-ui",
 		"name: port-9090-tcp",
 	} {
 		if !strings.Contains(service, want) {
 			t.Fatalf("expected service port name %q\n%s", want, service)
+		}
+	}
+	if !strings.Contains(udsPackage, "portName: web-ui") {
+		t.Fatalf("expected monitor port name to preserve the sanitized Compose name\n%s", udsPackage)
+	}
+}
+
+func TestWritePackageUsesNeutralUnnamedPortNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: unnamed-port-demo
+services:
+  db:
+    image: postgres:18.4-bookworm
+    expose:
+      - "5432"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-db.yaml"))
+	if !strings.Contains(service, "name: port-5432-tcp") {
+		t.Fatalf("expected neutral service port name\n%s", service)
+	}
+}
+
+func TestWritePackageRejectsDuplicateResolvedPortNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		ports        string
+		resolvedName string
+		firstPort    string
+		secondPort   string
+	}{
+		{
+			name: "generated and explicit",
+			ports: `
+      - name: port-9090-tcp
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - target: 9090
+        published: "9090"
+        protocol: tcp`,
+			resolvedName: "port-9090-tcp",
+			firstPort:    `8080/tcp (name "port-9090-tcp")`,
+			secondPort:   "9090/tcp (unnamed)",
+		},
+		{
+			name: "sanitized explicit names",
+			ports: `
+      - name: WEB__UI
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: web-ui
+        target: 9090
+        published: "9090"
+        protocol: tcp`,
+			resolvedName: "web-ui",
+			firstPort:    `8080/tcp (name "WEB__UI")`,
+			secondPort:   `9090/tcp (name "web-ui")`,
+		},
+		{
+			name: "truncated explicit names",
+			ports: `
+      - name: abcdefghijklmno-one
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: abcdefghijklmno-two
+        target: 9090
+        published: "9090"
+        protocol: tcp`,
+			resolvedName: "abcdefghijklmno",
+			firstPort:    `8080/tcp (name "abcdefghijklmno-one")`,
+			secondPort:   `9090/tcp (name "abcdefghijklmno-two")`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			input := []byte(`name: collision-demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:` + tt.ports + "\n")
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+
+			outDir := filepath.Join(t.TempDir(), "out")
+			err = render.WritePackage(outDir, app)
+			if err == nil {
+				t.Fatal("expected WritePackage() to reject duplicate resolved port names")
+			}
+			for _, want := range []string{`service "api"`, tt.resolvedName, tt.firstPort, tt.secondPort} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected error to contain %q, got %v", want, err)
+				}
+			}
+			if _, statErr := os.Stat(outDir); !os.IsNotExist(statErr) {
+				t.Fatalf("expected validation before output creation, os.Stat() error = %v", statErr)
+			}
+		})
+	}
+}
+
+func TestWritePackageScopesPortNamesToService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shared-port-name-demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    expose:
+      - "8080"
+  admin:
+    image: ghcr.io/acme/admin:1.0.0
+    expose:
+      - "8080"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if err := render.WritePackage(t.TempDir(), app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+}
+
+func TestWritePackageAllowsSamePortNumberWithDifferentProtocols(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: protocol-port-name-demo
+services:
+  dns:
+    image: ghcr.io/acme/dns:1.0.0
+    ports:
+      - target: 53
+        published: "53"
+        protocol: tcp
+      - target: 53
+        published: "53"
+        protocol: udp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	service := readFile(t, filepath.Join(outDir, "chart", "templates", "service-dns.yaml"))
+	for _, want := range []string{"name: port-53-tcp", "name: port-53-udp"} {
+		if !strings.Contains(service, want) {
+			t.Fatalf("expected service to contain %q\n%s", want, service)
 		}
 	}
 }
@@ -1246,7 +1428,7 @@ services:
 		"selector:",
 		"podSelector:",
 		"app.kubernetes.io/name: api",
-		"portName: http",
+		"portName: port-9090-tcp",
 		"targetPort: 9090",
 		"path: /metrics",
 		"kind: ServiceMonitor",
@@ -1294,7 +1476,7 @@ services:
 	for _, want := range []string{
 		"kind: PodMonitor",
 		"path: /custom/metrics",
-		"portName: http",
+		"portName: port-9090-tcp",
 		"targetPort: 9090",
 		"authorization:",
 		"type: Bearer",
@@ -1454,7 +1636,7 @@ func TestMonitorRejectsMismatchedPortNameAndTargetPort(t *testing.T) {
 x-uds:
   monitor:
     - service: api
-      portName: http
+      portName: port-8080-tcp
       targetPort: 9090
 services:
   api:
@@ -1473,7 +1655,7 @@ services:
 	if err == nil {
 		t.Fatalf("expected WritePackage() to fail for mismatched monitor port fields")
 	}
-	if !strings.Contains(err.Error(), `portName "http" resolves to 8080, but targetPort is 9090`) {
+	if !strings.Contains(err.Error(), `portName "port-8080-tcp" resolves to 8080, but targetPort is 9090`) {
 		t.Fatalf("expected mismatched port error, got %v", err)
 	}
 }

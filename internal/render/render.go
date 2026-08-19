@@ -41,6 +41,10 @@ const (
 )
 
 func WritePackage(root string, app model.App) error {
+	if err := validatePortNames(app.Services); err != nil {
+		return err
+	}
+
 	secretVariables := buildSecretVariables(app.Secrets)
 	environmentVariables, err := buildEnvironmentVariables(app, secretVariables)
 	if err != nil {
@@ -933,12 +937,12 @@ type monitorPort struct {
 
 func monitorPortsForService(svc model.Service) []monitorPort {
 	ports := make([]monitorPort, 0, len(svc.Ports))
-	for i, port := range svc.Ports {
+	for _, port := range svc.Ports {
 		if !strings.EqualFold(port.Protocol, "TCP") {
 			continue
 		}
 		ports = append(ports, monitorPort{
-			Name:   buildPortName(i, port),
+			Name:   buildPortName(port),
 			Number: port.Number,
 		})
 	}
@@ -1218,9 +1222,9 @@ func buildContainerPorts(ports []model.Port) []containerPort {
 		return nil
 	}
 	out := make([]containerPort, 0, len(ports))
-	for i, port := range ports {
+	for _, port := range ports {
 		out = append(out, containerPort{
-			Name:          buildPortName(i, port),
+			Name:          buildPortName(port),
 			ContainerPort: port.Number,
 			Protocol:      strings.ToUpper(port.Protocol),
 		})
@@ -1230,9 +1234,9 @@ func buildContainerPorts(ports []model.Port) []containerPort {
 
 func buildServicePorts(ports []model.Port) []servicePort {
 	out := make([]servicePort, 0, len(ports))
-	for i, port := range ports {
+	for _, port := range ports {
 		out = append(out, servicePort{
-			Name:        buildPortName(i, port),
+			Name:        buildPortName(port),
 			Port:        port.Number,
 			Protocol:    strings.ToUpper(port.Protocol),
 			TargetPort:  port.Number,
@@ -1538,14 +1542,39 @@ func stringPointer(value string) *string {
 	return &value
 }
 
-func buildPortName(index int, port model.Port) string {
+func buildPortName(port model.Port) string {
 	if name := sanitizePortName(port.Name); name != "" {
 		return name
 	}
-	if index == 0 && strings.EqualFold(port.Protocol, "TCP") {
-		return "http"
-	}
 	return fmt.Sprintf("port-%d-%s", port.Number, strings.ToLower(port.Protocol))
+}
+
+func validatePortNames(services []model.Service) error {
+	for _, svc := range services {
+		seen := make(map[string]model.Port, len(svc.Ports))
+		for _, port := range svc.Ports {
+			name := buildPortName(port)
+			if previous, exists := seen[name]; exists {
+				return fmt.Errorf(
+					"service %q ports %s and %s resolve to duplicate Kubernetes port name %q",
+					svc.Name,
+					formatPortNameSource(previous),
+					formatPortNameSource(port),
+					name,
+				)
+			}
+			seen[name] = port
+		}
+	}
+	return nil
+}
+
+func formatPortNameSource(port model.Port) string {
+	source := "unnamed"
+	if name := strings.TrimSpace(port.Name); name != "" {
+		source = fmt.Sprintf("name %q", name)
+	}
+	return fmt.Sprintf("%d/%s (%s)", port.Number, strings.ToLower(port.Protocol), source)
 }
 
 func sanitizePortName(raw string) string {

@@ -68,6 +68,7 @@ Deferred builds cannot automatically determine what to expose by examining the D
 - **Bind mounts:** Bind mounts are treated as local-development-only inputs and omitted from the rendered chart with a warning. Use a named volume when the data should become a PVC, or a config or secret when the mounted content should be materialized in Kubernetes.
 - **Network topology:** A shared Compose network maps to the package namespace. When services join different network sets, the bridge labels Pods by membership and allows communication only between services that share a network.
 - **External networks:** Membership among converted services is preserved, but external peers cannot be inferred from the transformation input. Conversion emits a warning; declare cross-package traffic explicitly with `x-uds.network.allow`.
+- **Port names:** The bridge preserves explicit Compose port names after Kubernetes-compatible sanitization. For unnamed ports, it generates `port-<number>-<protocol>` (for example, port-5432-tcp) instead of assuming an HTTP port. Conversion fails when two ports in the same service resolve to the same Kubernetes port name.
 - **Docker runtime settings:** Host networking, alternate runtimes and platforms, sysctls, Docker discovery labels, and custom stop signals are rejected when they cannot be represented faithfully.
 
 See the [full Compose example](../examples/full/compose.yaml) and [UDS package generation](uds-package.md) for extension keys and generated behavior.
