@@ -638,7 +638,7 @@ networks:
 		}
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	allows, ok := network["allow"].([]any)
@@ -702,7 +702,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	allows, ok := network["allow"].([]any)
@@ -719,6 +719,104 @@ services:
 	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
 	if strings.Contains(deployment, "network.compose.bridge.uds.dev/") {
 		t.Fatalf("did not expect membership labels for a shared network\n%s", deployment)
+	}
+}
+
+func TestWritePackageAddsDeployTimeNetworkAllow(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  network:
+    allow:
+      - direction: Egress
+        selector:
+          app.kubernetes.io/name: api
+        remoteNamespace: platform-service
+        ports:
+          - 8443
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackagePath := filepath.Join(outDir, "chart", "templates", "uds-package.yaml")
+	udsPackage := readFile(t, udsPackagePath)
+	for _, want := range []string{
+		"remoteNamespace: platform-service",
+		"app.kubernetes.io/name: api",
+		"{{- with .Values.additionalNetworkAllow }}",
+		"{{ toYaml . | nindent 12 }}",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected UDS Package template to contain %q\n%s", want, udsPackage)
+		}
+	}
+	staticIndex := strings.Index(udsPackage, "remoteNamespace: platform-service")
+	templateIndex := strings.Index(udsPackage, "{{- with .Values.additionalNetworkAllow }}")
+	if staticIndex < 0 || templateIndex < 0 || staticIndex >= templateIndex {
+		t.Fatalf("expected deploy-time rules after static rules\n%s", udsPackage)
+	}
+
+	parsedPackage := readUDSPackageYAMLMap(t, udsPackagePath)
+	network := mustMap(t, mustMap(t, parsedPackage["spec"])["network"])
+	allows, ok := network["allow"].([]any)
+	if !ok || len(allows) != 3 {
+		t.Fatalf("expected two inferred rules and one static rule, got %#v", network["allow"])
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	additionalAllow, ok := chartValues["additionalNetworkAllow"].([]any)
+	if !ok || len(additionalAllow) != 0 {
+		t.Fatalf("expected empty additionalNetworkAllow chart default, got %#v", chartValues["additionalNetworkAllow"])
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	variableToken := "###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###"
+	if !strings.Contains(zarfValues, "additionalNetworkAllow:\n  "+variableToken) {
+		t.Fatalf("expected raw structured Zarf substitution\n%s", zarfValues)
+	}
+	if strings.Contains(zarfValues, "'"+variableToken+"'") {
+		t.Fatalf("additional network allow substitution must not be quoted\n%s", zarfValues)
+	}
+
+	for name, substituted := range map[string]string{
+		"empty": strings.Replace(zarfValues, variableToken, "[]", 1),
+		"multiline": strings.Replace(
+			zarfValues,
+			"  "+variableToken,
+			"  - direction: Egress\n    remoteNamespace: logging\n    ports:\n      - 443",
+			1,
+		),
+	} {
+		var values map[string]any
+		if err := yamlv3.Unmarshal([]byte(substituted), &values); err != nil {
+			t.Fatalf("expected %s network allow substitution to be valid YAML: %v\n%s", name, err, substituted)
+		}
+		if _, ok := values["additionalNetworkAllow"].([]any); !ok {
+			t.Fatalf("expected %s network allow substitution to remain a list, got %#v", name, values["additionalNetworkAllow"])
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"name: ADDITIONAL_NETWORK_ALLOW",
+		"default: '[]'",
+		"autoIndent: true",
+		"values/values.yaml",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
 	}
 }
 
@@ -1689,7 +1787,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	spec := mustMap(t, udsPackage["spec"])
 	caBundle := mustMap(t, spec["caBundle"])
 	configMap := mustMap(t, caBundle["configMap"])
@@ -2114,12 +2212,15 @@ services:
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
 	}
-	// No secrets: no Zarf values file and no valuesFiles reference.
-	if _, err := os.Stat(filepath.Join(outDir, "values")); !os.IsNotExist(err) {
-		t.Fatalf("did not expect values/ directory for a package without secrets")
+	// Every package has a values file for deploy-time additional network rules.
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "additionalNetworkAllow:\n  ###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###") {
+		t.Fatalf("expected deploy-time network allow placeholder\n%s", zarfValues)
 	}
-	if strings.Contains(zarfConfig, "valuesFiles") {
-		t.Fatalf("did not expect valuesFiles for a package without secrets\n%s", zarfConfig)
+	for _, want := range []string{"name: ADDITIONAL_NETWORK_ALLOW", "default: '[]'", "autoIndent: true", "valuesFiles:"} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
 	}
 }
 
@@ -2398,7 +2499,7 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 
 func firstExposeRule(t *testing.T, path string) map[string]any {
 	t.Helper()
-	udsPackage := readYAMLMap(t, path)
+	udsPackage := readUDSPackageYAMLMap(t, path)
 	spec := mustMap(t, udsPackage["spec"])
 	network := mustMap(t, spec["network"])
 	exposes, ok := network["expose"].([]any)
@@ -2406,6 +2507,25 @@ func firstExposeRule(t *testing.T, path string) map[string]any {
 		t.Fatalf("expected at least one expose rule in %s, got %#v", path, network["expose"])
 	}
 	return mustMap(t, exposes[0])
+}
+
+func readUDSPackageYAMLMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	content := readFile(t, path)
+	templateBlock := strings.Join([]string{
+		"            {{- with .Values.additionalNetworkAllow }}",
+		"            {{ toYaml . | nindent 12 }}",
+		"            {{- end }}",
+	}, "\n")
+	if !strings.Contains(content, templateBlock) {
+		t.Fatalf("expected additional network allow template in %s\n%s", path, content)
+	}
+	content = strings.Replace(content, templateBlock, "", 1)
+	var out map[string]any
+	if err := yamlv3.Unmarshal([]byte(content), &out); err != nil {
+		t.Fatalf("unmarshal Helm-stripped yaml %s: %v", path, err)
+	}
+	return out
 }
 
 func readFile(t *testing.T, path string) string {
