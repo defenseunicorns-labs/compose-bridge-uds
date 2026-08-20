@@ -13,6 +13,7 @@ Secrets are rendered from chart values rather than baked into templates. Service
 - **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed.
 - **Policy exemptions:** Services requiring UDS policy exceptions produce `chart/templates/uds-exemption.yaml`.
 - **Monitoring:** Monitoring is opt-in through `x-uds.monitor[]`.
+- **Development dependencies:** Services referenced only by `depends_on` entries with `required: false` are omitted along with resources used exclusively by them.
 
 ## Extension keys
 
