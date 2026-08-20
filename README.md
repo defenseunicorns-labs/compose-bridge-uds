@@ -32,6 +32,10 @@ zarf package deploy zarf-package-wordpress-*.tar.zst
 
 The transformation writes a Helm chart to `out/chart/`, a Zarf package definition to `out/zarf.yaml`, and deploy-time configuration to `out/values/`. Services with `build:` are built during `zarf package create` through a generated Buildx Bake definition. See [Compose support](docs/compose-support.md#local-dockerfile-builds) for Docker Compose version-specific conversion steps.
 
+Mark a local-development dependency with long-syntax `depends_on` and
+`required: false` to keep it available to `docker compose up` while omitting it
+and its exclusive resources from the generated package.
+
 ## Documentation
 
 > [!TIP]

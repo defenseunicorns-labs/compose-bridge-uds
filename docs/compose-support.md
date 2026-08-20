@@ -10,7 +10,7 @@
 | `secrets:`                                                       | Converted to Kubernetes Secrets.                                                                                                                                                                                                                                                |
 | `configs:`                                                       | Converted to reloadable ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                   |
 | `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
-| `depends_on:`                                                    | Converted to init-container wait logic using `netcat` (busybox). The dependency must declare a port.                                                                                                                                                                            |
+| `depends_on:`                                                    | Required dependencies become init-container wait logic using `netcat` (busybox). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service. Included dependencies must declare a port.                                                                                       |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
 | `container_name:`                                                | Ignored with a warning. Kubernetes Service and Deployment names come from the Compose service name.                                                                                                                                                                             |
 | `stdin_open:`                                                    | Maps to the Kubernetes container `stdin` field.                                                                                                                                                                                                                                 |
@@ -21,7 +21,38 @@
 | Bind mounts                                                      | Skipped during conversion with a warning because host paths do not have a portable Kubernetes equivalent. Use named `volumes:`, `configs:`, or `secrets:` for data that should be rendered into the chart.                                                                       |
 | `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `chart/templates/uds-exemption.yaml`.                                                                                                                 |
 
-External configs are not supported. A `configs:` entry must define inline `content:`.
+External configs referenced by an included service are not supported. A
+packaged `configs:` entry must define inline `content:`.
+
+## Excluding development services
+
+Use long-syntax `depends_on` with `required: false` for a dependency that is
+useful during local Compose development but should not be included in the
+generated package:
+
+```yaml
+services:
+  api:
+    image: example/api:1.0.0
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false
+
+  db:
+    image: postgres:18
+```
+
+Compose still starts `db` during `docker compose up`. The bridge excludes it
+when every `depends_on` reference to `db` has `required: false`. Any required
+reference keeps the service in the package, and services that are never
+referenced remain included.
+
+Excluded services do not generate workloads, Services, images, dependency
+waits, policy exemptions, or other package content. Volumes, configs, and
+secrets used only by excluded services are pruned; resources shared with an
+included service remain. Explicit `x-uds.network.expose`, `x-uds.monitor`, and
+build `additional_contexts` entries must not reference an excluded service.
 
 ## Runtime configuration
 

@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -450,6 +451,217 @@ func TestLoadCanonicalRejectsUnsupportedTopLevelNetworkOptions(t *testing.T) {
 				t.Fatalf("expected unsupported network options error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadCanonicalExcludesOptionalDependencyAndPrunesResources(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false
+    volumes:
+      - shared-data:/var/lib/shared
+    secrets:
+      - shared-password
+    configs:
+      - shared-config
+  db:
+    image: postgres:18
+    platform: wasi/wasm
+    user: "0"
+    networks: [development]
+    expose:
+      - "5432"
+    volumes:
+      - shared-data:/var/lib/shared
+      - db-data:/var/lib/postgresql/data
+    secrets:
+      - shared-password
+      - db-password
+    configs:
+      - shared-config
+      - db-schema
+volumes:
+  shared-data: {}
+  db-data: {}
+secrets:
+  shared-password:
+    file: ./shared-password.txt
+  db-password:
+    file: ./db-password.txt
+configs:
+  shared-config:
+    content: shared
+  db-schema:
+    external: true
+networks:
+  development:
+    driver: overlay
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 1 || app.Services[0].Name != "api" {
+		t.Fatalf("expected only api to remain, got %#v", app.Services)
+	}
+	if len(app.Services[0].DependsOn) != 0 {
+		t.Fatalf("expected dependency on excluded db to be removed, got %#v", app.Services[0].DependsOn)
+	}
+	if len(app.Volumes) != 1 || app.Volumes["shared-data"].Name != "shared-data" {
+		t.Fatalf("expected only shared volume to remain, got %#v", app.Volumes)
+	}
+	if len(app.Secrets) != 1 || app.Secrets["shared-password"].Name != "shared-password" {
+		t.Fatalf("expected only shared secret to remain, got %#v", app.Secrets)
+	}
+	if len(app.Configs) != 1 || app.Configs["shared-config"].Name != "shared-config" {
+		t.Fatalf("expected only shared config to remain, got %#v", app.Configs)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	for _, path := range []string{
+		"chart/templates/deployment-db.yaml",
+		"chart/templates/service-db.yaml",
+		"chart/templates/pvc-db-data.yaml",
+		"chart/templates/configmap-db-schema.yaml",
+		"chart/templates/secret-db-password.yaml",
+		"chart/templates/uds-exemption.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(outDir, path)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be omitted, stat err = %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		"chart/templates/pvc-shared-data.yaml",
+		"chart/templates/configmap-shared-config.yaml",
+		"chart/templates/secret-shared-password.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(outDir, path)); err != nil {
+			t.Fatalf("expected shared resource %s to remain: %v", path, err)
+		}
+	}
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	if strings.Contains(zarfConfig, "postgres:18") || strings.Contains(zarfConfig, model.DependencyInitImage) {
+		t.Fatalf("did not expect excluded image or dependency init image\n%s", zarfConfig)
+	}
+}
+
+func TestLoadCanonicalKeepsServiceWhenAnyDependencyReferenceIsRequired(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    depends_on:
+      db:
+        condition: service_started
+        required: false
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+    depends_on:
+      db:
+        condition: service_started
+        required: true
+  db:
+    image: postgres:18
+    expose: ["5432"]
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 3 {
+		t.Fatalf("expected db to remain because one reference is required, got %#v", app.Services)
+	}
+	for _, service := range app.Services {
+		if service.Name == "db" {
+			return
+		}
+	}
+	t.Fatalf("expected db to remain, got %#v", app.Services)
+}
+
+func TestLoadCanonicalKeepsShortSyntaxDependencyRequired(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    depends_on: [db]
+  db:
+    image: postgres:18
+    expose: ["5432"]
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 2 {
+		t.Fatalf("expected short-syntax dependency to remain required, got %#v", app.Services)
+	}
+}
+
+func TestLoadCanonicalRejectsXUDSReferenceToExcludedService(t *testing.T) {
+	t.Parallel()
+
+	for _, extension := range []string{
+		"network:\n    expose:\n      - service: db",
+		"monitor:\n    - service: db",
+	} {
+		input := []byte(fmt.Sprintf(`name: demo
+x-uds:
+  %s
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    depends_on:
+      db:
+        required: false
+  db:
+    image: postgres:18
+`, extension))
+		_, err := compose.LoadCanonicalYAML(input)
+		if err == nil || !strings.Contains(err.Error(), `references excluded service "db"`) {
+			t.Fatalf("expected excluded service reference error, got %v", err)
+		}
+	}
+}
+
+func TestLoadCanonicalRejectsBuildContextFromExcludedService(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    build:
+      context: .
+      additional_contexts:
+        base: service:base
+    depends_on:
+      base:
+        required: false
+  base:
+    build:
+      context: ./base
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil || !strings.Contains(err.Error(), `build references excluded service "base"`) {
+		t.Fatalf("expected excluded build context error, got %v", err)
 	}
 }
 
