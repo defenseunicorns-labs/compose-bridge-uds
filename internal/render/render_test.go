@@ -1032,6 +1032,91 @@ services:
 	}
 }
 
+func TestWritePackageAddsDomainPackageInterface(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: worker
+x-uds:
+  sso: []
+services:
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+    environment:
+      DOMAIN: internal.example
+    secrets:
+      - api_key
+secrets:
+  api_key:
+    file: ./api_key.txt
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	udsValues := mustMap(t, chartValues["uds"])
+	if got := udsValues["domain"]; got != "uds.dev" {
+		t.Fatalf("expected default UDS domain, got %#v", got)
+	}
+	workerEnvironment := mustMap(t, mustMap(t, chartValues["environment"])["worker"])
+	if got := workerEnvironment["DOMAIN"]; got != "internal.example" {
+		t.Fatalf("expected Compose DOMAIN environment value to remain ordinary configuration, got %#v", got)
+	}
+	if _, ok := chartValues["additionalNetworkAllow"].([]any); !ok {
+		t.Fatalf("expected additional network allow values to coexist with uds.domain, got %#v", chartValues)
+	}
+	if _, ok := mustMap(t, chartValues["secrets"])["API_KEY"]; !ok {
+		t.Fatalf("expected secret values to coexist with uds.domain, got %#v", chartValues)
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, want := range []string{
+		"uds:\n    domain: \"###ZARF_VAR_DOMAIN###\"",
+		"###ZARF_VAR_WORKER_DOMAIN###",
+		"###ZARF_VAR_API_KEY###",
+		"###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###",
+	} {
+		if !strings.Contains(zarfValues, want) {
+			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
+		}
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	variables, ok := zarfConfig["variables"].([]any)
+	if !ok {
+		t.Fatalf("expected Zarf variables, got %#v", zarfConfig["variables"])
+	}
+	variablesByName := map[string]map[string]any{}
+	for _, raw := range variables {
+		variable := mustMap(t, raw)
+		variablesByName[variable["name"].(string)] = variable
+	}
+	domain := variablesByName["DOMAIN"]
+	if domain == nil || domain["default"] != "uds.dev" || domain["description"] != "The domain for accessing endpoints" {
+		t.Fatalf("expected non-sensitive DOMAIN package variable, got %#v", domain)
+	}
+	if _, exists := domain["sensitive"]; exists {
+		t.Fatalf("DOMAIN must not be sensitive, got %#v", domain)
+	}
+	if _, exists := domain["prompt"]; exists {
+		t.Fatalf("DOMAIN must not prompt, got %#v", domain)
+	}
+	if variablesByName["WORKER_DOMAIN"] == nil || variablesByName["ADDITIONAL_NETWORK_ALLOW"] == nil || variablesByName["API_KEY"] == nil {
+		t.Fatalf("expected automatic, environment, and secret variables to coexist, got %#v", variablesByName)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	if strings.Contains(udsPackage, "clientId:") {
+		t.Fatalf("explicitly empty SSO must remain disabled\n%s", udsPackage)
+	}
+}
+
 func TestWritePackageWithConfigAndExpose(t *testing.T) {
 	t.Parallel()
 
@@ -1587,7 +1672,7 @@ services:
 	for _, want := range []string{
 		"clientId: myapp",
 		"name: Myapp",
-		"https://web.uds.dev/*",
+		"https://web.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
 	} {
@@ -1676,8 +1761,59 @@ services:
 	if !strings.Contains(udsPackage, "name: Myapp") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "https://web.uds.dev/*") {
+	if !strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
+	}
+}
+
+func TestSSOExplicitRedirectURIsRemainLiteralAndOrdered(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: myapp
+x-uds:
+  sso:
+    - redirectUris:
+        - https://first.example/callback
+        - "https://custom.{{ .Values.uds.domain }}/callback"
+        - https://last.uds.dev/callback
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	redirects := []string{
+		"https://first.example/callback",
+		"https://custom.{{ .Values.uds.domain }}/callback",
+		"https://last.uds.dev/callback",
+	}
+	previous := -1
+	for _, redirect := range redirects {
+		index := strings.Index(udsPackage, redirect)
+		if index < 0 {
+			t.Fatalf("expected explicit redirect URI %q to remain unchanged\n%s", redirect, udsPackage)
+		}
+		if index <= previous {
+			t.Fatalf("expected explicit redirect URI declaration order to be preserved\n%s", udsPackage)
+		}
+		previous = index
+	}
+	if strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
+		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
 
@@ -2645,6 +2781,18 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 			wantErr: `generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
 		},
 		{
+			name: "normalized secret variable collision",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Secrets: map[string]model.Secret{
+					"api-token": {Name: "api-token"},
+					"api_token": {Name: "api_token"},
+				},
+			},
+			wantErr: `compose secret "api_token" generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
+		},
+		{
 			name: "cross-service variable collision",
 			app: model.App{
 				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
@@ -2670,7 +2818,7 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 					Env: []model.EnvVar{{Name: "NETWORK_ALLOW", Value: "custom"}},
 				}},
 			},
-			wantErr: `generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved package variable`,
+			wantErr: `generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with automatic package variable "ADDITIONAL_NETWORK_ALLOW"`,
 		},
 		{
 			name: "reserved secret variable collision",
@@ -2681,7 +2829,18 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 					"additional-network-allow": {Name: "additional-network-allow"},
 				},
 			},
-			wantErr: `compose secret "additional-network-allow" generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with reserved package variable`,
+			wantErr: `compose secret "additional-network-allow" generates Zarf variable "ADDITIONAL_NETWORK_ALLOW", which conflicts with automatic package variable "ADDITIONAL_NETWORK_ALLOW"`,
+		},
+		{
+			name: "domain secret variable collision",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Secrets: map[string]model.Secret{
+					"domain": {Name: "domain"},
+				},
+			},
+			wantErr: `compose secret "domain" generates Zarf variable "DOMAIN", which conflicts with automatic package variable "DOMAIN"`,
 		},
 		{
 			name: "compose config map collision",
