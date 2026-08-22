@@ -140,25 +140,30 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	// Secrets are rendered by Helm from chart values so Zarf can substitute the
-	// sensitive value into the values file at deploy time (Zarf only templates
-	// chart valuesFiles, not arbitrary template files). secretValueKeys tracks the
-	// values keys used so the chart defaults and the Zarf values file stay in sync.
-	secretValueKeys := make([]string, 0, len(app.Secrets))
+	// Package-owned secrets are rendered by Helm from sensitive Zarf values.
+	// External secrets are not created by this chart; workloads reference an
+	// existing Kubernetes Secret selected through deploy-time name and key values.
 	for _, name := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[name]
 		if secret.External {
 			continue
 		}
-		variableName := secretVariables[secret.Name]
+		variableName := secretVariables[secret.Name].Value
 		if err := writeSecretTemplate(filepath.Join(templatesDir, fmt.Sprintf("secret-%s.yaml", secret.Name)), app, secret, variableName); err != nil {
 			return err
 		}
-		secretValueKeys = append(secretValueKeys, variableName)
 	}
 
 	for _, svc := range app.Services {
-		deployment, err := buildDeployment(app.Package.Name, app.Package.Namespace, svc, servicePorts, preserveNetworkMembership)
+		deployment, err := buildDeployment(
+			app.Package.Name,
+			app.Package.Namespace,
+			svc,
+			servicePorts,
+			preserveNetworkMembership,
+			app.Secrets,
+			secretVariables,
+		)
 		if err != nil {
 			return err
 		}
@@ -187,7 +192,7 @@ func WritePackage(root string, app model.App) error {
 	if err := writeChartMetadata(filepath.Join(chartDir, "Chart.yaml"), app); err != nil {
 		return err
 	}
-	if err := writeChartValues(filepath.Join(chartDir, "values.yaml"), app, secretValueKeys, environmentVariables, false); err != nil {
+	if err := writeChartValues(filepath.Join(chartDir, "values.yaml"), app, secretVariables, environmentVariables, false); err != nil {
 		return err
 	}
 
@@ -195,7 +200,7 @@ func WritePackage(root string, app model.App) error {
 	if err := os.MkdirAll(filepath.Dir(valuesPath), 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", filepath.Dir(valuesPath), err)
 	}
-	if err := writeChartValues(valuesPath, app, secretValueKeys, environmentVariables, true); err != nil {
+	if err := writeChartValues(valuesPath, app, secretVariables, environmentVariables, true); err != nil {
 		return err
 	}
 
@@ -462,7 +467,7 @@ func writeChartMetadata(path string, app model.App) error {
 func writeChartValues(
 	path string,
 	app model.App,
-	secretKeys []string,
+	secretVariables map[string]secretVariableNames,
 	environmentVariables map[string]map[string]string,
 	placeholder bool,
 ) error {
@@ -470,6 +475,7 @@ func writeChartValues(
 		AdditionalNetworkAllow: []any{},
 		Environment:            map[string]map[string]string{},
 		Secrets:                map[string]string{},
+		ExternalSecrets:        map[string]externalSecretValues{},
 		UDS:                    udsValues{Domain: defaultDomain},
 	}
 	if placeholder {
@@ -492,11 +498,22 @@ func writeChartValues(
 		values.Environment[svc.Name] = serviceValues
 	}
 
-	for _, key := range secretKeys {
+	for _, name := range sortedSecretNames(app.Secrets) {
+		secret := app.Secrets[name]
+		variable := secretVariables[name]
+		if secret.External {
+			external := externalSecretValues{Key: secret.Name}
+			if placeholder {
+				external.Name = fmt.Sprintf("###ZARF_VAR_%s###", variable.SecretName)
+				external.Key = fmt.Sprintf("###ZARF_VAR_%s###", variable.SecretKey)
+			}
+			values.ExternalSecrets[variable.ValuesKey] = external
+			continue
+		}
 		if placeholder {
-			values.Secrets[key] = fmt.Sprintf("###ZARF_VAR_%s###", key)
+			values.Secrets[variable.Value] = fmt.Sprintf("###ZARF_VAR_%s###", variable.Value)
 		} else {
-			values.Secrets[key] = ""
+			values.Secrets[variable.Value] = ""
 		}
 	}
 
@@ -530,7 +547,7 @@ func writeChartValues(
 func writeZarfConfig(
 	path string,
 	app model.App,
-	secretVariables map[string]string,
+	secretVariables map[string]secretVariableNames,
 	environmentVariables map[string]map[string]string,
 	images []string,
 ) error {
@@ -548,8 +565,24 @@ func writeZarfConfig(
 		},
 	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
+		secret := app.Secrets[secretName]
+		variable := secretVariables[secretName]
+		if secret.External {
+			variables = append(variables,
+				zarfVariable{
+					Name:        variable.SecretName,
+					Description: fmt.Sprintf("Kubernetes Secret name for external compose secret %s", secretName),
+				},
+				zarfVariable{
+					Name:        variable.SecretKey,
+					Description: fmt.Sprintf("Key in the Kubernetes Secret for external compose secret %s", secretName),
+					Default:     stringPointer(secret.Name),
+				},
+			)
+			continue
+		}
 		variables = append(variables, zarfVariable{
-			Name:        secretVariables[secretName],
+			Name:        variable.Value,
 			Description: fmt.Sprintf("Value for compose secret %s", secretName),
 			Prompt:      true,
 			Sensitive:   true,
@@ -615,9 +648,17 @@ func writeZarfConfig(
 	return nil
 }
 
-func buildDeployment(appName string, namespace string, svc model.Service, servicePorts map[string]int, preserveNetworkMembership bool) (deploymentManifest, error) {
+func buildDeployment(
+	appName string,
+	namespace string,
+	svc model.Service,
+	servicePorts map[string]int,
+	preserveNetworkMembership bool,
+	secrets map[string]model.Secret,
+	secretVariables map[string]secretVariableNames,
+) (deploymentManifest, error) {
 	ports := svc.Ports
-	volumes, volumeMounts := buildVolumes(svc)
+	volumes, volumeMounts := buildVolumes(svc, secrets, secretVariables)
 	resources := buildResources(svc.Resources)
 	securityContext := buildSecurityContext(svc)
 	initContainers := buildDependencyInitContainers(svc, servicePorts)
@@ -1197,7 +1238,7 @@ func gatewayPortCandidate(port model.Port, requirePublished bool) bool {
 	return !requirePublished || port.Published
 }
 
-func buildVolumes(svc model.Service) ([]volumeSpec, []volumeMountSpec) {
+func buildVolumes(svc model.Service, secrets map[string]model.Secret, secretVariables map[string]secretVariableNames) ([]volumeSpec, []volumeMountSpec) {
 	volumes := make([]volumeSpec, 0, len(svc.Volumes)+len(svc.Secrets)+len(svc.Configs))
 	mounts := make([]volumeMountSpec, 0, len(svc.Volumes)+len(svc.Secrets)+len(svc.Configs))
 
@@ -1218,11 +1259,26 @@ func buildVolumes(svc model.Service) ([]volumeSpec, []volumeMountSpec) {
 
 	for _, ref := range svc.Secrets {
 		volumeName := sanitizeManifestName("secret-" + ref.Source)
+		secretName := ref.Source
+		secretKey := ref.Source
+		if secret, exists := secrets[ref.Source]; exists && secret.External {
+			variable := secretVariables[ref.Source]
+			secretName = fmt.Sprintf(
+				`{{ required "external compose secret %s requires a Kubernetes Secret name" .Values.externalSecrets.%s.name }}`,
+				secret.Name,
+				variable.ValuesKey,
+			)
+			secretKey = fmt.Sprintf(
+				`{{ required "external compose secret %s requires a Kubernetes Secret key" .Values.externalSecrets.%s.key }}`,
+				secret.Name,
+				variable.ValuesKey,
+			)
+		}
 		volumes = append(volumes, volumeSpec{
 			Name: volumeName,
 			Secret: &secretVolumeSource{
-				SecretName: ref.Source,
-				Items:      []keyToPath{{Key: ref.Source, Path: ref.Source}},
+				SecretName: secretName,
+				Items:      []keyToPath{{Key: secretKey, Path: ref.Source}},
 			},
 		})
 		mounts = append(mounts, volumeMountSpec{
@@ -1501,19 +1557,25 @@ func buildProbe(healthcheck *model.Healthcheck) *probe {
 
 func buildEnvironmentVariables(
 	app model.App,
-	secretVariables map[string]string,
+	secretVariables map[string]secretVariableNames,
 ) (map[string]map[string]string, error) {
 	usedVariables := map[string]string{
 		additionalNetworkAllowVariable: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable),
 		domainVariable:                 fmt.Sprintf("automatic package variable %q", domainVariable),
 	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
-		if err := registerZarfVariable(
-			usedVariables,
-			secretVariables[secretName],
-			fmt.Sprintf("compose secret %q", secretName),
-		); err != nil {
-			return nil, err
+		variable := secretVariables[secretName]
+		for _, name := range []string{variable.Value, variable.SecretName, variable.SecretKey} {
+			if name == "" {
+				continue
+			}
+			if err := registerZarfVariable(
+				usedVariables,
+				name,
+				fmt.Sprintf("compose secret %q", secretName),
+			); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1583,12 +1645,45 @@ func registerZarfVariable(used map[string]string, name, owner string) error {
 	return nil
 }
 
-func buildSecretVariables(secrets map[string]model.Secret) map[string]string {
-	out := map[string]string{}
+type secretVariableNames struct {
+	ValuesKey  string
+	Value      string
+	SecretName string
+	SecretKey  string
+}
+
+func buildSecretVariables(secrets map[string]model.Secret) map[string]secretVariableNames {
+	usedValuesKeys := map[string]struct{}{}
+	usedVariables := map[string]struct{}{}
+	out := map[string]secretVariableNames{}
 	for _, name := range sortedSecretNames(secrets) {
-		out[name] = normalizeZarfVariableName(name)
+		valuesKey := buildSecretVariableName(name, usedValuesKeys)
+		if secrets[name].External {
+			out[name] = secretVariableNames{
+				ValuesKey:  valuesKey,
+				SecretName: buildSecretVariableName(valuesKey+"_SECRET_NAME", usedVariables),
+				SecretKey:  buildSecretVariableName(valuesKey+"_SECRET_KEY", usedVariables),
+			}
+			continue
+		}
+		out[name] = secretVariableNames{
+			ValuesKey: valuesKey,
+			Value:     buildSecretVariableName(valuesKey, usedVariables),
+		}
 	}
 	return out
+}
+
+func buildSecretVariableName(secretName string, used map[string]struct{}) string {
+	base := normalizeZarfVariableName(secretName)
+	candidate := base
+	for i := 2; ; i++ {
+		if _, exists := used[candidate]; !exists {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s_%d", base, i)
+	}
 }
 
 func normalizeZarfVariableName(raw string) string {
@@ -2092,12 +2187,18 @@ type chartMetadata struct {
 // chartValues is the values document written for both the chart defaults
 // (chart/values.yaml) and the Zarf-templated overrides (values/values.yaml).
 type chartValues struct {
-	AdditionalNetworkAllow any                          `yaml:"additionalNetworkAllow"`
-	Environment            map[string]map[string]string `yaml:"environment,omitempty"`
-	Secrets                map[string]string            `yaml:"secrets"`
-	UDS                    udsValues                    `yaml:"uds"`
+	AdditionalNetworkAllow any                             `yaml:"additionalNetworkAllow"`
+	Environment            map[string]map[string]string    `yaml:"environment,omitempty"`
+	Secrets                map[string]string               `yaml:"secrets"`
+	ExternalSecrets        map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
+	UDS                    udsValues                       `yaml:"uds"`
 }
 
 type udsValues struct {
 	Domain string `yaml:"domain"`
+}
+
+type externalSecretValues struct {
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
 }

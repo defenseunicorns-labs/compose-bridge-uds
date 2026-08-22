@@ -146,6 +146,7 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 	if err != nil {
 		return model.App{}, err
 	}
+	excludedSecretRefs := collectExcludedSecretRefs(project, secretAliases, excludedServices)
 	configs, configAliases, err := normalizeTopLevelConfigs(project.Configs)
 	if err != nil {
 		return model.App{}, err
@@ -265,6 +266,7 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 		})
 	}
 
+	markBoundarySecretsExternal(services, secrets, excludedSecretRefs)
 	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
 	for name, config := range configs {
 		if config.External && strings.TrimSpace(config.Content) == "" {
@@ -283,6 +285,44 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 		Configs:      configs,
 		BuildSecrets: buildSecrets,
 	}, nil
+}
+
+// collectExcludedSecretRefs records known Compose secrets consumed by services
+// omitted from the package. Invalid references on excluded services are ignored
+// because those services otherwise bypass bridge compatibility validation.
+func collectExcludedSecretRefs(project types.Project, aliases map[string]string, excludedServices map[string]struct{}) map[string]struct{} {
+	refs := map[string]struct{}{}
+	for serviceName, service := range project.Services {
+		if _, excluded := excludedServices[serviceName]; !excluded {
+			continue
+		}
+		for _, entry := range service.Secrets {
+			name, ok := resolveAlias(aliases, strings.TrimSpace(entry.Source))
+			if ok {
+				refs[name] = struct{}{}
+			}
+		}
+	}
+	return refs
+}
+
+// markBoundarySecretsExternal keeps local Compose secret files available to
+// excluded development dependencies while making packaged consumers reference
+// a Kubernetes Secret supplied by the deployment environment.
+func markBoundarySecretsExternal(services []model.Service, secrets map[string]model.Secret, excludedRefs map[string]struct{}) {
+	for _, service := range services {
+		for _, ref := range service.Secrets {
+			if _, crossesBoundary := excludedRefs[ref.Source]; !crossesBoundary {
+				continue
+			}
+			secret, exists := secrets[ref.Source]
+			if !exists {
+				continue
+			}
+			secret.External = true
+			secrets[ref.Source] = secret
+		}
+	}
 }
 
 func rejectExcludedBuildContexts(serviceName string, build map[string]any, excluded map[string]struct{}) error {

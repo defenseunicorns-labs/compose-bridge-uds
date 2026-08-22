@@ -521,6 +521,9 @@ networks:
 	if len(app.Secrets) != 1 || app.Secrets["shared-password"].Name != "shared-password" {
 		t.Fatalf("expected only shared secret to remain, got %#v", app.Secrets)
 	}
+	if !app.Secrets["shared-password"].External {
+		t.Fatalf("expected secret shared with excluded db to become external, got %#v", app.Secrets)
+	}
 	if len(app.Configs) != 1 || app.Configs["shared-config"].Name != "shared-config" {
 		t.Fatalf("expected only shared config to remain, got %#v", app.Configs)
 	}
@@ -541,10 +544,12 @@ networks:
 			t.Fatalf("expected %s to be omitted, stat err = %v", path, err)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "secret-shared-password.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected external shared secret not to be created, stat err = %v", err)
+	}
 	for _, path := range []string{
 		"chart/templates/pvc-shared-data.yaml",
 		"chart/templates/configmap-shared-config.yaml",
-		"chart/templates/secret-shared-password.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(outDir, path)); err != nil {
 			t.Fatalf("expected shared resource %s to remain: %v", path, err)
@@ -553,6 +558,31 @@ networks:
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
 	if strings.Contains(zarfConfig, "postgres:18") || strings.Contains(zarfConfig, model.DependencyInitImage) {
 		t.Fatalf("did not expect excluded image or dependency init image\n%s", zarfConfig)
+	}
+	for _, want := range []string{
+		"name: SHARED_PASSWORD_SECRET_NAME",
+		"name: SHARED_PASSWORD_SECRET_KEY",
+		"default: shared-password",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected external secret variable %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "sensitive: true") || strings.Contains(zarfConfig, "prompt: true") {
+		t.Fatalf("external secret references must not prompt or be sensitive\n%s", zarfConfig)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		"external compose secret shared-password requires a Kubernetes Secret name",
+		".Values.externalSecrets.SHARED_PASSWORD.name",
+		".Values.externalSecrets.SHARED_PASSWORD.key",
+		"mountPath: /run/secrets/shared-password",
+		"subPath: shared-password",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
+		}
 	}
 }
 
@@ -2615,10 +2645,108 @@ secrets:
 		"valuesFiles:",
 		"values/values.yaml",
 		"name: API_KEY",
+		"prompt: true",
 		"sensitive: true",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		"name: secret-api-key",
+		"secretName: api-key",
+		"key: api-key",
+		"path: api-key",
+		"mountPath: /run/secrets/api_key",
+		"subPath: api-key",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected package-owned secret file mount %q\n%s", want, deployment)
+		}
+	}
+	if strings.Contains(deployment, "mountPath: /run/secrets\n") {
+		t.Fatalf("secret must not replace the service-account parent directory\n%s", deployment)
+	}
+}
+
+func TestWritePackageNativeExternalSecretUsesNameAndKeyVariables(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    secrets:
+      - source: operator-credential
+        target: /etc/shop/database-password
+secrets:
+  operator-credential:
+    external: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if !app.Secrets["operator-credential"].External {
+		t.Fatalf("expected native external Compose secret to remain external, got %#v", app.Secrets)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "secret-operator-credential.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no chart-owned Secret for native external secret, stat err = %v", err)
+	}
+
+	chartValues := readFile(t, filepath.Join(outDir, "chart", "values.yaml"))
+	for _, want := range []string{
+		"externalSecrets:",
+		"OPERATOR_CREDENTIAL:",
+		"name: \"\"",
+		"key: operator-credential",
+	} {
+		if !strings.Contains(chartValues, want) {
+			t.Fatalf("expected chart values to contain %q\n%s", want, chartValues)
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, want := range []string{
+		"###ZARF_VAR_OPERATOR_CREDENTIAL_SECRET_NAME###",
+		"###ZARF_VAR_OPERATOR_CREDENTIAL_SECRET_KEY###",
+	} {
+		if !strings.Contains(zarfValues, want) {
+			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"name: OPERATOR_CREDENTIAL_SECRET_NAME",
+		"name: OPERATOR_CREDENTIAL_SECRET_KEY",
+		"default: operator-credential",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected external secret variable %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "sensitive: true") || strings.Contains(zarfConfig, "prompt: true") {
+		t.Fatalf("external secret references must not prompt or be sensitive\n%s", zarfConfig)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		".Values.externalSecrets.OPERATOR_CREDENTIAL.name",
+		".Values.externalSecrets.OPERATOR_CREDENTIAL.key",
+		"mountPath: /etc/shop/database-password",
+		"subPath: operator-credential",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected custom external secret file mount %q\n%s", want, deployment)
 		}
 	}
 }
@@ -2781,16 +2909,18 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 			wantErr: `generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
 		},
 		{
-			name: "normalized secret variable collision",
+			name: "external secret reference variable collision",
 			app: model.App{
-				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
-				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api-token-secret", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "NAME", Value: "not-a-secret-reference"}},
+				}},
 				Secrets: map[string]model.Secret{
-					"api-token": {Name: "api-token"},
-					"api_token": {Name: "api_token"},
+					"api-token": {Name: "api-token", External: true},
 				},
 			},
-			wantErr: `compose secret "api_token" generates Zarf variable "API_TOKEN", which conflicts with compose secret "api-token"`,
+			wantErr: `generates Zarf variable "API_TOKEN_SECRET_NAME", which conflicts with compose secret "api-token"`,
 		},
 		{
 			name: "cross-service variable collision",

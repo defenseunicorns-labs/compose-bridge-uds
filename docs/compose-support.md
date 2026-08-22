@@ -7,7 +7,7 @@
 | `image:`                                                         | Container image reference.                                                                                                                                                                                                                                                      |
 | `build:`                                                         | Preserved as a generated Buildx Bake definition. `zarf package create` builds the image and adds its OCI archive to the package.                                                                                                                                                |
 | Named `volumes:`                                                 | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default).                                                                                                                                                                                                        |
-| `secrets:`                                                       | Converted to Kubernetes Secrets.                                                                                                                                                                                                                                                |
+| `secrets:`                                                       | Delivered as read-only files. Secrets used only by packaged services become package-owned Kubernetes Secrets. Native external secrets and secrets shared with excluded services reference deployment-provided Kubernetes Secret names and keys.                                                                                               |
 | `configs:`                                                       | Converted to reloadable ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                   |
 | `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
 | `depends_on:`                                                    | Required dependencies become init-container wait logic using `netcat` (busybox). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service. Included dependencies must declare a port.                                                                                       |
@@ -53,6 +53,27 @@ waits, policy exemptions, or other package content. Volumes, configs, and
 secrets used only by excluded services are pruned; resources shared with an
 included service remain. Explicit `x-uds.network.expose`, `x-uds.monitor`, and
 build `additional_contexts` entries must not reference an excluded service.
+
+## Runtime secrets
+
+Compose grants services access to secrets as read-only files, normally under
+`/run/secrets`. The generated chart preserves each secret's target file path.
+
+- A secret consumed only by included services is package-owned. Zarf prompts
+  for its sensitive value, and the chart creates the Kubernetes Secret.
+- A secret consumed only by excluded services is omitted.
+- A secret consumed by included and excluded services becomes package-external.
+- A native Compose `external: true` secret consumed by an included service is
+  also package-external.
+
+For each package-external Compose secret, the generated Zarf package declares
+`<SECRET>_SECRET_NAME` and `<SECRET>_SECRET_KEY` variables. The name has no
+default and must identify an existing Kubernetes Secret in the package
+namespace. The key defaults to the normalized Compose secret name. These
+variables are non-sensitive references and do not expose the secret value.
+
+Different Compose secrets can select different keys from the same Kubernetes
+Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 ## Runtime configuration
 
