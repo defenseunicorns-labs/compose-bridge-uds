@@ -60,7 +60,13 @@ Every resolved service environment value becomes a non-sensitive Zarf variable n
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. Direct Helm deployments do not provide that UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the portable `[A-Za-z_][A-Za-z0-9_]*` form. Generated Zarf variable names must also be unique across all services, secrets, and reserved package variables such as `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the portable `[A-Za-z_][A-Za-z0-9_]*` form. Generated Zarf variable names must also be unique across all services, secrets, and automatic package variables such as `DOMAIN` and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+
+## Package domain
+
+Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaulting to `uds.dev`. The value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including inferred SSO redirect URIs. An `x-uds.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
+
+`DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
 
 ## Deploy-time network access
 

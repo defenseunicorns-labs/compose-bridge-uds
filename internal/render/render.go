@@ -40,6 +40,10 @@ const (
 	additionalNetworkAllowVariable    = "ADDITIONAL_NETWORK_ALLOW"
 	additionalNetworkAllowPlaceholder = "__HELM_ADDITIONAL_NETWORK_ALLOW__"
 	zarfNetworkAllowPlaceholder       = "__ZARF_ADDITIONAL_NETWORK_ALLOW__"
+	domainVariable                    = "DOMAIN"
+	defaultDomain                     = "uds.dev"
+	helmDomainValue                   = "{{ .Values.uds.domain }}"
+	zarfDomainPlaceholder             = "__ZARF_DOMAIN__"
 )
 
 func WritePackage(root string, app model.App) error {
@@ -466,9 +470,11 @@ func writeChartValues(
 		AdditionalNetworkAllow: []any{},
 		Environment:            map[string]map[string]string{},
 		Secrets:                map[string]string{},
+		UDS:                    udsValues{Domain: defaultDomain},
 	}
 	if placeholder {
 		values.AdditionalNetworkAllow = zarfNetworkAllowPlaceholder
+		values.UDS.Domain = zarfDomainPlaceholder
 	}
 
 	for _, svc := range app.Services {
@@ -506,6 +512,14 @@ func writeChartValues(
 		if rendered == string(marshaled) {
 			return fmt.Errorf("render additional network allow Zarf variable in %s: placeholder not found", path)
 		}
+
+		domainPlaceholderLine := "    domain: " + zarfDomainPlaceholder
+		domainVariableLine := "    domain: \"###ZARF_VAR_" + domainVariable + "###\""
+		withDomain := strings.Replace(rendered, domainPlaceholderLine, domainVariableLine, 1)
+		if withDomain == rendered {
+			return fmt.Errorf("render domain Zarf variable in %s: placeholder not found", path)
+		}
+		rendered = withDomain
 	}
 	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 		return fmt.Errorf("write file %s: %w", path, err)
@@ -520,12 +534,19 @@ func writeZarfConfig(
 	environmentVariables map[string]map[string]string,
 	images []string,
 ) error {
-	variables := []zarfVariable{{
-		Name:        additionalNetworkAllowVariable,
-		Description: "Additional UDS network allow rules (YAML array)",
-		Default:     stringPointer("[]"),
-		AutoIndent:  true,
-	}}
+	variables := []zarfVariable{
+		{
+			Name:        domainVariable,
+			Description: "The domain for accessing endpoints",
+			Default:     stringPointer(defaultDomain),
+		},
+		{
+			Name:        additionalNetworkAllowVariable,
+			Description: "Additional UDS network allow rules (YAML array)",
+			Default:     stringPointer("[]"),
+			AutoIndent:  true,
+		},
+	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variables = append(variables, zarfVariable{
 			Name:        secretVariables[secretName],
@@ -1080,7 +1101,7 @@ func buildInferredSSO(app model.App) []any {
 			"clientId": app.Package.Name,
 			"name":     titleCase(app.Package.Name),
 			"redirectUris": []any{
-				fmt.Sprintf("https://%s.uds.dev/*", host),
+				inferredRedirectURI(host),
 			},
 			"enableAuthserviceSelector": map[string]string{
 				"app.kubernetes.io/name": service,
@@ -1104,7 +1125,7 @@ func enrichSSOEntries(app model.App) []any {
 		setDefault(item, "name", titleCase(app.Package.Name))
 		if host != "" {
 			setDefault(item, "redirectUris", []any{
-				fmt.Sprintf("https://%s.uds.dev/*", host),
+				inferredRedirectURI(host),
 			})
 		}
 		if service != "" {
@@ -1115,6 +1136,10 @@ func enrichSSOEntries(app model.App) []any {
 		enriched = append(enriched, item)
 	}
 	return enriched
+}
+
+func inferredRedirectURI(host string) string {
+	return fmt.Sprintf("https://%s.%s/*", host, helmDomainValue)
 }
 
 // findPrimaryExposedService determines the primary host and service name from expose rules.
@@ -1479,7 +1504,8 @@ func buildEnvironmentVariables(
 	secretVariables map[string]string,
 ) (map[string]map[string]string, error) {
 	usedVariables := map[string]string{
-		additionalNetworkAllowVariable: "reserved package variable",
+		additionalNetworkAllowVariable: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable),
+		domainVariable:                 fmt.Sprintf("automatic package variable %q", domainVariable),
 	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		if err := registerZarfVariable(
@@ -1558,24 +1584,11 @@ func registerZarfVariable(used map[string]string, name, owner string) error {
 }
 
 func buildSecretVariables(secrets map[string]model.Secret) map[string]string {
-	used := map[string]struct{}{}
 	out := map[string]string{}
 	for _, name := range sortedSecretNames(secrets) {
-		out[name] = buildSecretVariableName(name, used)
+		out[name] = normalizeZarfVariableName(name)
 	}
 	return out
-}
-
-func buildSecretVariableName(secretName string, used map[string]struct{}) string {
-	base := normalizeZarfVariableName(secretName)
-	candidate := base
-	for i := 2; ; i++ {
-		if _, exists := used[candidate]; !exists {
-			used[candidate] = struct{}{}
-			return candidate
-		}
-		candidate = fmt.Sprintf("%s_%d", base, i)
-	}
 }
 
 func normalizeZarfVariableName(raw string) string {
@@ -2082,4 +2095,9 @@ type chartValues struct {
 	AdditionalNetworkAllow any                          `yaml:"additionalNetworkAllow"`
 	Environment            map[string]map[string]string `yaml:"environment,omitempty"`
 	Secrets                map[string]string            `yaml:"secrets"`
+	UDS                    udsValues                    `yaml:"uds"`
+}
+
+type udsValues struct {
+	Domain string `yaml:"domain"`
 }
