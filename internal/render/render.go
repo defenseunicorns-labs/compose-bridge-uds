@@ -2191,7 +2191,7 @@ type chartValues struct {
 	Environment            map[string]map[string]string    `yaml:"environment,omitempty"`
 	Secrets                map[string]string               `yaml:"secrets"`
 	ExternalSecrets        map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
-	UDS                    udsValues                    `yaml:"uds"`
+	UDS                    udsValues                       `yaml:"uds"`
 }
 
 type udsValues struct {
