@@ -40,6 +40,10 @@ const (
 	additionalNetworkAllowVariable    = "ADDITIONAL_NETWORK_ALLOW"
 	additionalNetworkAllowPlaceholder = "__HELM_ADDITIONAL_NETWORK_ALLOW__"
 	zarfNetworkAllowPlaceholder       = "__ZARF_ADDITIONAL_NETWORK_ALLOW__"
+	domainVariable                    = "DOMAIN"
+	defaultDomain                     = "uds.dev"
+	helmDomainValue                   = "{{ .Values.uds.domain }}"
+	zarfDomainPlaceholder             = "__ZARF_DOMAIN__"
 )
 
 func WritePackage(root string, app model.App) error {
@@ -472,9 +476,11 @@ func writeChartValues(
 		Environment:            map[string]map[string]string{},
 		Secrets:                map[string]string{},
 		ExternalSecrets:        map[string]externalSecretValues{},
+		UDS:                    udsValues{Domain: defaultDomain},
 	}
 	if placeholder {
 		values.AdditionalNetworkAllow = zarfNetworkAllowPlaceholder
+		values.UDS.Domain = zarfDomainPlaceholder
 	}
 
 	for _, svc := range app.Services {
@@ -523,6 +529,14 @@ func writeChartValues(
 		if rendered == string(marshaled) {
 			return fmt.Errorf("render additional network allow Zarf variable in %s: placeholder not found", path)
 		}
+
+		domainPlaceholderLine := "    domain: " + zarfDomainPlaceholder
+		domainVariableLine := "    domain: \"###ZARF_VAR_" + domainVariable + "###\""
+		withDomain := strings.Replace(rendered, domainPlaceholderLine, domainVariableLine, 1)
+		if withDomain == rendered {
+			return fmt.Errorf("render domain Zarf variable in %s: placeholder not found", path)
+		}
+		rendered = withDomain
 	}
 	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 		return fmt.Errorf("write file %s: %w", path, err)
@@ -537,12 +551,19 @@ func writeZarfConfig(
 	environmentVariables map[string]map[string]string,
 	images []string,
 ) error {
-	variables := []zarfVariable{{
-		Name:        additionalNetworkAllowVariable,
-		Description: "Additional UDS network allow rules (YAML array)",
-		Default:     stringPointer("[]"),
-		AutoIndent:  true,
-	}}
+	variables := []zarfVariable{
+		{
+			Name:        domainVariable,
+			Description: "The domain for accessing endpoints",
+			Default:     stringPointer(defaultDomain),
+		},
+		{
+			Name:        additionalNetworkAllowVariable,
+			Description: "Additional UDS network allow rules (YAML array)",
+			Default:     stringPointer("[]"),
+			AutoIndent:  true,
+		},
+	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		secret := app.Secrets[secretName]
 		variable := secretVariables[secretName]
@@ -1121,7 +1142,7 @@ func buildInferredSSO(app model.App) []any {
 			"clientId": app.Package.Name,
 			"name":     titleCase(app.Package.Name),
 			"redirectUris": []any{
-				fmt.Sprintf("https://%s.uds.dev/*", host),
+				inferredRedirectURI(host),
 			},
 			"enableAuthserviceSelector": map[string]string{
 				"app.kubernetes.io/name": service,
@@ -1145,7 +1166,7 @@ func enrichSSOEntries(app model.App) []any {
 		setDefault(item, "name", titleCase(app.Package.Name))
 		if host != "" {
 			setDefault(item, "redirectUris", []any{
-				fmt.Sprintf("https://%s.uds.dev/*", host),
+				inferredRedirectURI(host),
 			})
 		}
 		if service != "" {
@@ -1156,6 +1177,10 @@ func enrichSSOEntries(app model.App) []any {
 		enriched = append(enriched, item)
 	}
 	return enriched
+}
+
+func inferredRedirectURI(host string) string {
+	return fmt.Sprintf("https://%s.%s/*", host, helmDomainValue)
 }
 
 // findPrimaryExposedService determines the primary host and service name from expose rules.
@@ -1535,7 +1560,8 @@ func buildEnvironmentVariables(
 	secretVariables map[string]secretVariableNames,
 ) (map[string]map[string]string, error) {
 	usedVariables := map[string]string{
-		additionalNetworkAllowVariable: "reserved package variable",
+		additionalNetworkAllowVariable: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable),
+		domainVariable:                 fmt.Sprintf("automatic package variable %q", domainVariable),
 	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variable := secretVariables[secretName]
@@ -2163,8 +2189,13 @@ type chartMetadata struct {
 type chartValues struct {
 	AdditionalNetworkAllow any                             `yaml:"additionalNetworkAllow"`
 	Environment            map[string]map[string]string    `yaml:"environment,omitempty"`
-	Secrets                map[string]string               `yaml:"secrets,omitempty"`
+	Secrets                map[string]string               `yaml:"secrets"`
 	ExternalSecrets        map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
+	UDS                    udsValues                    `yaml:"uds"`
+}
+
+type udsValues struct {
+	Domain string `yaml:"domain"`
 }
 
 type externalSecretValues struct {
