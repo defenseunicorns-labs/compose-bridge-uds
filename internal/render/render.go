@@ -1604,12 +1604,12 @@ func buildEnvironmentVariables(
 
 		serviceVariables := map[string]string{}
 		for _, item := range svc.Env {
-			if !portableEnvironmentName.MatchString(item.Name) {
+			if !kubernetesEnvironmentName.MatchString(item.Name) {
 				return nil, fmt.Errorf(
 					"invalid environment variable %q on service %q: names used with generated envFrom ConfigMaps must match %s",
 					item.Name,
 					svc.Name,
-					portableEnvironmentName.String(),
+					kubernetesEnvironmentName.String(),
 				)
 			}
 			variableName := normalizeZarfVariableName(svc.Name + "_" + item.Name)
@@ -1852,7 +1852,7 @@ var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
 var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidZarfVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
 var validZarfVariableName = regexp.MustCompile(`^[A-Z0-9_]+$`)
-var portableEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var kubernetesEnvironmentName = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`)
 
 func sanitizeManifestName(raw string) string {
 	name := strings.ToLower(strings.TrimSpace(raw))

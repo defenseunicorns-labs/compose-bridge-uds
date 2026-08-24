@@ -2863,6 +2863,59 @@ services:
 	}
 }
 
+func TestWritePackageExternalizesKubernetesEnvironmentNames(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: elk
+services:
+  elasticsearch:
+    image: elasticsearch:7.16.1
+    environment:
+      discovery.type: single-node
+  logstash:
+    image: logstash:7.16.1
+    environment:
+      discovery.seed_hosts: logstash
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	templatesDir := filepath.Join(outDir, "chart", "templates")
+	configMaps := map[string][]string{
+		"configmap-elasticsearch-environment.yaml": {
+			`discovery.type: {{ index .Values.environment "elasticsearch" "discovery.type" | quote }}`,
+		},
+		"configmap-logstash-environment.yaml": {
+			`discovery.seed_hosts: {{ index .Values.environment "logstash" "discovery.seed_hosts" | quote }}`,
+		},
+	}
+	for name, expected := range configMaps {
+		configMap := readFile(t, filepath.Join(templatesDir, name))
+		for _, want := range expected {
+			if !strings.Contains(configMap, want) {
+				t.Fatalf("expected environment ConfigMap to contain %q\n%s", want, configMap)
+			}
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, want := range []string{
+		"###ZARF_VAR_ELASTICSEARCH_DISCOVERY_TYPE###",
+		"###ZARF_VAR_LOGSTASH_DISCOVERY_SEED_HOSTS###",
+	} {
+		if !strings.Contains(zarfValues, want) {
+			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
+		}
+	}
+}
+
 func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 	t.Parallel()
 
@@ -2872,15 +2925,15 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "non-portable environment name",
+			name: "invalid Kubernetes environment name",
 			app: model.App{
 				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
 				Services: []model.Service{{
 					Name: "api", Image: "ghcr.io/acme/api:1.0.0",
-					Env: []model.EnvVar{{Name: "DATABASE-URL", Value: "postgres://db"}},
+					Env: []model.EnvVar{{Name: "DATABASE/URL", Value: "postgres://db"}},
 				}},
 			},
-			wantErr: `invalid environment variable "DATABASE-URL" on service "api"`,
+			wantErr: `invalid environment variable "DATABASE/URL" on service "api"`,
 		},
 		{
 			name: "normalized environment variable collision",
