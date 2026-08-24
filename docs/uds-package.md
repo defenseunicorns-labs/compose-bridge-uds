@@ -8,6 +8,8 @@ The generated Zarf component uses one inferred package flavor. It is `registry1`
 
 Generated package versions follow `<upstream-app-version>-uds.<uds-sub-version>`. The bridge infers the upstream version from the first service with a published port, or the first service when none are published. Tags that cannot be normalized to a semantic version, `latest`, digest-only images, and local builds fall back to `0.1.0-uds.0`.
 
+For UDS Registry publishing, generated Zarf metadata includes the standard `dev.uds.title`, `dev.uds.categories`, `dev.uds.keywords`, `dev.uds.tagline`, and `dev.uds.icon` annotations. These values are derived deterministically from the package and service names, with a generic Compose Bridge SVG icon.
+
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
 Package-owned secrets are rendered from chart values rather than baked into templates. Package-external secrets carry only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. Every package also exposes `DOMAIN` for generated endpoints and `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ const (
 	defaultDomain                     = "uds.dev"
 	helmDomainValue                   = "{{ .Values.uds.domain }}"
 	zarfDomainPlaceholder             = "__ZARF_DOMAIN__"
+	generatedPackageIconSVG           = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" rx="32" fill="#111827"/><path d="M45 62l55-30 55 30-55 30z" fill="#a78bfa"/><path d="M45 72l50 27v58l-50-28z" fill="#7c3aed"/><path d="M155 72l-50 27v58l50-28z" fill="#5b21b6"/></svg>`
 )
 
 func WritePackage(root string, app model.App) error {
@@ -726,6 +728,7 @@ func writeZarfConfig(
 			Name:        app.Package.Name,
 			Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 			Version:     app.Package.Version,
+			Annotations: buildPackageMetadataAnnotations(app),
 		},
 		Variables: variables,
 		Documentation: map[string]string{
@@ -773,6 +776,41 @@ func writeZarfConfig(
 		return fmt.Errorf("write zarf config: %w", err)
 	}
 	return nil
+}
+
+func buildPackageMetadataAnnotations(app model.App) map[string]string {
+	title := titleCase(app.Package.Name)
+	return map[string]string{
+		"dev.uds.title":      title,
+		"dev.uds.categories": "Cloud Native, Kubernetes (K8s)",
+		"dev.uds.keywords":   strings.Join(packageMetadataKeywords(app, title), ", "),
+		"dev.uds.tagline":    fmt.Sprintf("Deploy %s from Docker Compose with UDS.", title),
+		"dev.uds.icon":       "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(generatedPackageIconSVG)),
+	}
+}
+
+func packageMetadataKeywords(app model.App, title string) []string {
+	keywords := []string{title, "Docker Compose", "Kubernetes", "UDS"}
+	seen := map[string]struct{}{}
+	for _, keyword := range keywords {
+		seen[strings.ToLower(keyword)] = struct{}{}
+	}
+	for _, service := range app.Services {
+		keyword := titleCase(service.Name)
+		key := strings.ToLower(keyword)
+		if keyword == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		keywords = append(keywords, keyword)
+		seen[key] = struct{}{}
+		if len(keywords) == 7 {
+			break
+		}
+	}
+	return keywords
 }
 
 func inferPackageFlavor(app model.App, images []string) string {
@@ -2357,9 +2395,10 @@ type zarfPackageConfig struct {
 }
 
 type zarfMetadata struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Version     string `yaml:"version"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description,omitempty"`
+	Version     string            `yaml:"version"`
+	Annotations map[string]string `yaml:"annotations,omitempty"`
 }
 
 type zarfVariable struct {

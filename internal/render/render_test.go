@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -3043,6 +3044,55 @@ services:
 				t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
 			}
 		})
+	}
+}
+
+func TestWritePackageGeneratesUDSRegistryMetadata(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: hello-world
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	metadata := mustMap(t, zarfConfig["metadata"])
+	annotations := mustMap(t, metadata["annotations"])
+	want := map[string]string{
+		"dev.uds.title":      "Hello World",
+		"dev.uds.categories": "Cloud Native, Kubernetes (K8s)",
+		"dev.uds.keywords":   "Hello World, Docker Compose, Kubernetes, UDS, Api, Worker",
+		"dev.uds.tagline":    "Deploy Hello World from Docker Compose with UDS.",
+	}
+	for key, value := range want {
+		if got := annotations[key]; got != value {
+			t.Fatalf("metadata.annotations[%q] = %#v, want %q", key, got, value)
+		}
+	}
+
+	icon, ok := annotations["dev.uds.icon"].(string)
+	if !ok || !strings.HasPrefix(icon, "data:image/svg+xml;base64,") {
+		t.Fatalf("expected SVG data URI icon, got %#v", annotations["dev.uds.icon"])
+	}
+	encoded := strings.TrimPrefix(icon, "data:image/svg+xml;base64,")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode generated metadata icon: %v", err)
+	}
+	if !strings.Contains(string(decoded), `<svg xmlns="http://www.w3.org/2000/svg"`) {
+		t.Fatalf("expected decoded metadata icon to be SVG, got %q", decoded)
 	}
 }
 
