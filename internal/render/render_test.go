@@ -2602,6 +2602,79 @@ services:
 	}
 }
 
+func TestWritePackageGeneratesPackageDocumentation(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    environment:
+      LOG_LEVEL: info
+    secrets:
+      - api_key
+    depends_on:
+      database:
+        condition: service_healthy
+  database:
+    image: postgres:17
+secrets:
+  api_key:
+    file: ./api_key.txt
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	documentation := mustMap(t, zarfConfig["documentation"])
+	wantDocumentation := map[string]string{
+		"readme":        "docs/README.md",
+		"configuration": "docs/configuration.md",
+		"dependencies":  "docs/dependencies.md",
+	}
+	for key, want := range wantDocumentation {
+		if got := documentation[key]; got != want {
+			t.Fatalf("documentation[%q] = %#v, want %q", key, got, want)
+		}
+	}
+
+	readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
+	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
+		if !strings.Contains(readme, want) {
+			t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
+		}
+	}
+
+	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
+	for _, want := range []string{
+		"| `DOMAIN` | Cluster domain used by generated application endpoints | uds.dev | false |",
+		"| `ADDITIONAL_NETWORK_ALLOW` | Additional UDS network allow rules supplied as a YAML array | [] | false |",
+		"| `API_KEY` | Value for Compose secret api-key | — | true |",
+		"| `API_LOG_LEVEL` | Value for LOG_LEVEL environment variable on Compose service api | info | false |",
+	} {
+		if !strings.Contains(configuration, want) {
+			t.Fatalf("expected generated configuration documentation to contain %q\n%s", want, configuration)
+		}
+	}
+
+	dependencies := readFile(t, filepath.Join(outDir, "docs", "dependencies.md"))
+	for _, want := range []string{
+		"| `api` | `ghcr.io/acme/api:1.0.0` | database (service_healthy) |",
+		"| `database` | `postgres:17` | — |",
+	} {
+		if !strings.Contains(dependencies, want) {
+			t.Fatalf("expected generated dependency documentation to contain %q\n%s", want, dependencies)
+		}
+	}
+}
+
 func TestWritePackageSecretFlowsThroughChartValues(t *testing.T) {
 	t.Parallel()
 

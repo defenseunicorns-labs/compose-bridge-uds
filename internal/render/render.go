@@ -210,6 +210,10 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
+	if err := writePackageDocumentation(root, app, secretVariables, environmentVariables); err != nil {
+		return err
+	}
+
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
 		images = append(images, buildComponentImages(svc, servicePorts)...)
@@ -220,6 +224,114 @@ func WritePackage(root string, app model.App) error {
 	}
 
 	return nil
+}
+
+func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string) error {
+	docsDir := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		return fmt.Errorf("create documentation directory %s: %w", docsDir, err)
+	}
+
+	documents := map[string]string{
+		"README.md":        buildPackageReadme(app),
+		"configuration.md": buildConfigurationDocumentation(app, secretVariables, environmentVariables),
+		"dependencies.md":  buildDependencyDocumentation(app),
+	}
+	for name, content := range documents {
+		path := filepath.Join(docsDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write package documentation %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func buildPackageReadme(app model.App) string {
+	return fmt.Sprintf(`# %s
+
+This UDS package was generated from Docker Compose. It deploys the %s application to the %s namespace.
+
+## Package documentation
+
+- [Configuration](configuration.md) describes the package's deploy-time settings.
+- [Dependencies](dependencies.md) lists the application services, images, and service dependencies.
+
+Regenerate this package after changing the source Compose project; generated files are not intended for manual editing.
+`, app.Package.Name, app.Package.Name, app.Package.Namespace)
+}
+
+func buildConfigurationDocumentation(app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string) string {
+	var content strings.Builder
+	content.WriteString("# Configuration\n\n")
+	content.WriteString("Set these values when deploying the generated Zarf package.\n\n")
+	content.WriteString("| Variable | Description | Default | Sensitive |\n")
+	content.WriteString("|---|---|---|---|\n")
+	writeDocumentationVariable(&content, domainVariable, "Cluster domain used by generated application endpoints", defaultDomain, false)
+	writeDocumentationVariable(&content, additionalNetworkAllowVariable, "Additional UDS network allow rules supplied as a YAML array", "[]", false)
+
+	for _, secretName := range sortedSecretNames(app.Secrets) {
+		secret := app.Secrets[secretName]
+		variable := secretVariables[secretName]
+		if secret.External {
+			writeDocumentationVariable(&content, variable.SecretName, fmt.Sprintf("Kubernetes Secret name for external Compose secret %s", secretName), "", false)
+			writeDocumentationVariable(&content, variable.SecretKey, fmt.Sprintf("Key in the Kubernetes Secret for external Compose secret %s", secretName), secret.Name, false)
+			continue
+		}
+		writeDocumentationVariable(&content, variable.Value, fmt.Sprintf("Value for Compose secret %s", secretName), "", true)
+	}
+
+	for _, svc := range app.Services {
+		for _, item := range svc.Env {
+			writeDocumentationVariable(
+				&content,
+				environmentVariables[svc.Name][item.Name],
+				fmt.Sprintf("Value for %s environment variable on Compose service %s", item.Name, svc.Name),
+				item.Value,
+				false,
+			)
+		}
+	}
+
+	return content.String()
+}
+
+func writeDocumentationVariable(content *strings.Builder, name, description, defaultValue string, sensitive bool) {
+	defaultText := "—"
+	if defaultValue != "" {
+		defaultText = markdownTableValue(defaultValue)
+	}
+	fmt.Fprintf(content, "| `%s` | %s | %s | %t |\n", markdownTableValue(name), markdownTableValue(description), defaultText, sensitive)
+}
+
+func markdownTableValue(value string) string {
+	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.ReplaceAll(value, "\r\n", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
+}
+
+func buildDependencyDocumentation(app model.App) string {
+	var content strings.Builder
+	content.WriteString("# Dependencies\n\n")
+	content.WriteString("The generated package contains these application services and container images.\n\n")
+	content.WriteString("| Service | Image | Depends on |\n")
+	content.WriteString("|---|---|---|\n")
+	for _, svc := range app.Services {
+		dependencies := make([]string, 0, len(svc.DependsOn))
+		for _, dependency := range svc.DependsOn {
+			label := dependency.Service
+			if dependency.Condition != "" {
+				label += " (" + dependency.Condition + ")"
+			}
+			dependencies = append(dependencies, label)
+		}
+		dependencyText := "—"
+		if len(dependencies) > 0 {
+			dependencyText = strings.Join(dependencies, ", ")
+		}
+		fmt.Fprintf(&content, "| `%s` | `%s` | %s |\n", markdownTableValue(svc.Name), markdownTableValue(svc.Image), markdownTableValue(dependencyText))
+	}
+	return content.String()
 }
 
 // Compose build workspace and Zarf package-creation actions.
@@ -607,6 +719,11 @@ func writeZarfConfig(
 			Version:     app.Package.Version,
 		},
 		Variables: variables,
+		Documentation: map[string]string{
+			"readme":        "docs/README.md",
+			"configuration": "docs/configuration.md",
+			"dependencies":  "docs/dependencies.md",
+		},
 	}
 
 	chart := zarfChart{
@@ -2105,11 +2222,12 @@ type udsServiceMesh struct {
 }
 
 type zarfPackageConfig struct {
-	APIVersion string          `yaml:"apiVersion,omitempty"`
-	Kind       string          `yaml:"kind"`
-	Metadata   zarfMetadata    `yaml:"metadata"`
-	Variables  []zarfVariable  `yaml:"variables,omitempty"`
-	Components []zarfComponent `yaml:"components"`
+	APIVersion    string            `yaml:"apiVersion,omitempty"`
+	Kind          string            `yaml:"kind"`
+	Metadata      zarfMetadata      `yaml:"metadata"`
+	Variables     []zarfVariable    `yaml:"variables,omitempty"`
+	Components    []zarfComponent   `yaml:"components"`
+	Documentation map[string]string `yaml:"documentation,omitempty"`
 }
 
 type zarfMetadata struct {
