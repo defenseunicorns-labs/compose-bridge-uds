@@ -16,7 +16,7 @@ Package-owned secrets are rendered from chart values rather than baked into temp
 
 - **Expose:** Services with published `ports:` are exposed on the tenant gateway. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
 - **Network allow:** Intra-namespace ingress and egress rules are always included so services in the namespace can communicate. Static `x-uds.network.allow` entries follow inferred rules, and deploy-time `ADDITIONAL_NETWORK_ALLOW` entries are appended last.
-- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Inferred redirect URIs use the package's deploy-time `DOMAIN`, which defaults to `uds.dev`.
+- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Its default name is `<Package Name> Login` and its client ID is `uds-<group>-<package-name>`, with `compose` as the default group. Inferred redirect URIs use the package's deploy-time `DOMAIN`, which defaults to `uds.dev`.
 - **Policy exemptions:** Services requiring UDS policy exceptions produce `chart/templates/uds-exemption.yaml`.
 - **Monitoring:** Metrics monitors are inferred from ports named `metrics` or `prometheus`, common exporter ports, and `METRICS_PORT` or `PROMETHEUS_PORT` environment variables when they match a declared TCP port. Set `x-uds.monitor` to take complete control of monitoring, including `x-uds.monitor: []` to disable inference.
 - **Development dependencies:** Services referenced only by `depends_on` entries with `required: false` are omitted along with resources used exclusively by them.
@@ -29,6 +29,7 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 |---|---|
 | `x-uds.package.name` | Package name (default: Compose project name). |
 | `x-uds.package.namespace` | Package namespace (default: Compose project name). |
+| `x-uds.package.group` | Group segment used by inferred SSO client IDs (default: `compose`). |
 | `x-uds.package.version` | Package version override. A semantic upstream version receives `-uds.0`; an existing `<upstream>-uds.<sub-version>` value is preserved. |
 | `x-uds.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service. |
 | `x-uds.network.allow[]` | Add network allow rules, deduplicated against inferred rules. |
@@ -48,7 +49,7 @@ x-uds:
 
 ### Extension notes
 
-- **`x-uds.sso`:** Missing `clientId`, `name`, `redirectUris`, and `enableAuthserviceSelector` fields are inferred. Inferred redirect URIs use `DOMAIN`; explicitly supplied redirect URIs remain unchanged and in declaration order. An explicitly empty list disables inferred SSO without removing `DOMAIN` from the package interface.
+- **`x-uds.sso`:** Missing `clientId`, `name`, `redirectUris`, and `enableAuthserviceSelector` fields are inferred. Set `x-uds.package.group` to customize the group segment of inferred client IDs. Inferred redirect URIs use `DOMAIN`; explicitly supplied client IDs, names, and redirect URIs remain unchanged. An explicitly empty list disables inferred SSO without removing `DOMAIN` from the package interface.
 - **`x-uds.monitor[]`:** When this key is absent, the bridge infers common metrics endpoints but cannot recognize every application-specific metrics configuration. When present, entries may be raw UDS `spec.monitor[]` items or use the bridge-only `service` key to infer labels and port metadata; no additional monitors are inferred. Set `portName` or `targetPort` for multi-port services, or set an empty list to disable monitoring.
 - **`x-uds.caBundle.configMap`:** This customizes the namespace trust-bundle ConfigMap. Trust bundle contents are configured separately in UDS Core.
 

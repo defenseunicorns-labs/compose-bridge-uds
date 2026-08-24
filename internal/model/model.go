@@ -97,6 +97,7 @@ type Dependency struct {
 type Package struct {
 	Name              string
 	Namespace         string
+	Group             string
 	UpstreamVersion   string
 	Version           string
 	VersionConfigured bool

@@ -1833,8 +1833,8 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: myapp",
-		"name: Myapp",
+		"clientId: uds-compose-myapp",
+		"name: Myapp Login",
 		"https://web.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
@@ -1921,11 +1921,50 @@ services:
 	if !strings.Contains(udsPackage, "clientId: custom-id") {
 		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "name: Myapp") {
+	if !strings.Contains(udsPackage, "name: Myapp Login") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
 	if !strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
+	}
+}
+
+func TestSSOAutoGenerationUsesConfiguredPackageGroup(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: mattermost
+x-uds:
+  package:
+    group: software_factory
+services:
+  web:
+    image: mattermost/mattermost-team-edition:10.11.2
+    ports:
+      - target: 8065
+        published: "8065"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if got := app.Package.Group; got != "software-factory" {
+		t.Fatalf("Package.Group = %q, want software-factory", got)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	for _, want := range []string{
+		"clientId: uds-software-factory-mattermost",
+		"name: Mattermost Login",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected UDS SSO configuration to contain %q\n%s", want, udsPackage)
+		}
 	}
 }
 

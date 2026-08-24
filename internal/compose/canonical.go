@@ -536,6 +536,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	config := model.Package{
 		Name:            projectName,
 		Namespace:       projectName,
+		Group:           "compose",
 		UpstreamVersion: model.DefaultUpstreamVersion,
 		Version:         model.DefaultVersion,
 	}
@@ -559,6 +560,18 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 				return model.Package{}, fmt.Errorf("invalid x-uds.package.namespace: %w", err)
 			}
 			config.Namespace = normalized
+		}
+		if rawGroup, exists := pkg["group"]; exists {
+			value, ok := rawGroup.(string)
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
+				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: must be a non-empty string")
+			}
+			normalized, err := normalizeName(value)
+			if err != nil {
+				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: %w", err)
+			}
+			config.Group = strings.ReplaceAll(normalized, ".", "-")
 		}
 		if rawVersion, exists := pkg["version"]; exists {
 			value, ok := rawVersion.(string)

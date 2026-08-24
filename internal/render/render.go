@@ -1370,8 +1370,8 @@ func buildInferredSSO(app model.App) []any {
 	}
 	return []any{
 		map[string]any{
-			"clientId": app.Package.Name,
-			"name":     titleCase(app.Package.Name),
+			"clientId": inferredSSOClientID(app.Package),
+			"name":     inferredSSOName(app.Package),
 			"redirectUris": []any{
 				inferredRedirectURI(host),
 			},
@@ -1393,8 +1393,8 @@ func enrichSSOEntries(app model.App) []any {
 			enriched = append(enriched, raw)
 			continue
 		}
-		setDefault(item, "clientId", app.Package.Name)
-		setDefault(item, "name", titleCase(app.Package.Name))
+		setDefault(item, "clientId", inferredSSOClientID(app.Package))
+		setDefault(item, "name", inferredSSOName(app.Package))
 		if host != "" {
 			setDefault(item, "redirectUris", []any{
 				inferredRedirectURI(host),
@@ -1408,6 +1408,18 @@ func enrichSSOEntries(app model.App) []any {
 		enriched = append(enriched, item)
 	}
 	return enriched
+}
+
+func inferredSSOClientID(pkg model.Package) string {
+	group := pkg.Group
+	if group == "" {
+		group = "compose"
+	}
+	return fmt.Sprintf("uds-%s-%s", group, pkg.Name)
+}
+
+func inferredSSOName(pkg model.Package) string {
+	return titleCase(pkg.Name) + " Login"
 }
 
 func inferredRedirectURI(host string) string {
