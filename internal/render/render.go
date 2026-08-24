@@ -1,7 +1,6 @@
 package render
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +44,6 @@ const (
 	defaultDomain                     = "uds.dev"
 	helmDomainValue                   = "{{ .Values.uds.domain }}"
 	zarfDomainPlaceholder             = "__ZARF_DOMAIN__"
-	generatedPackageIconSVG           = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" rx="32" fill="#111827"/><path d="M45 62l55-30 55 30-55 30z" fill="#a78bfa"/><path d="M45 72l50 27v58l-50-28z" fill="#7c3aed"/><path d="M155 72l-50 27v58l50-28z" fill="#5b21b6"/></svg>`
 )
 
 func WritePackage(root string, app model.App) error {
@@ -785,7 +783,6 @@ func buildPackageMetadataAnnotations(app model.App) map[string]string {
 		"dev.uds.categories": "Cloud Native, Kubernetes (K8s)",
 		"dev.uds.keywords":   strings.Join(packageMetadataKeywords(app, title), ", "),
 		"dev.uds.tagline":    fmt.Sprintf("Deploy %s from Docker Compose with UDS.", title),
-		"dev.uds.icon":       "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(generatedPackageIconSVG)),
 	}
 }
 

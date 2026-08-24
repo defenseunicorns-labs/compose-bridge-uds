@@ -1,7 +1,6 @@
 package render_test
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -3080,19 +3079,6 @@ services:
 		if got := annotations[key]; got != value {
 			t.Fatalf("metadata.annotations[%q] = %#v, want %q", key, got, value)
 		}
-	}
-
-	icon, ok := annotations["dev.uds.icon"].(string)
-	if !ok || !strings.HasPrefix(icon, "data:image/svg+xml;base64,") {
-		t.Fatalf("expected SVG data URI icon, got %#v", annotations["dev.uds.icon"])
-	}
-	encoded := strings.TrimPrefix(icon, "data:image/svg+xml;base64,")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatalf("decode generated metadata icon: %v", err)
-	}
-	if !strings.Contains(string(decoded), `<svg xmlns="http://www.w3.org/2000/svg"`) {
-		t.Fatalf("expected decoded metadata icon to be SVG, got %q", decoded)
 	}
 }
 
