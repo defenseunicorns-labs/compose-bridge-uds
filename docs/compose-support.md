@@ -81,7 +81,7 @@ Every resolved service environment value becomes a non-sensitive Zarf variable n
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. Direct Helm deployments do not provide that UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the portable `[A-Za-z_][A-Za-z0-9_]*` form. Generated Zarf variable names must also be unique across all services, secrets, and automatic package variables such as `DOMAIN` and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, secrets, and automatic package variables such as `DOMAIN` and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
 ## Package domain
 
