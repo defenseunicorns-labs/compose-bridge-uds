@@ -6,6 +6,8 @@ Generated packages include consumer documentation under `out/docs/`. The top-lev
 
 The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
 
+Generated package versions follow `<upstream-app-version>-uds.<uds-sub-version>`. The bridge infers the upstream version from the first service with a published port, or the first service when none are published. Tags that cannot be normalized to a semantic version, `latest`, digest-only images, and local builds fall back to `0.1.0-uds.0`.
+
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
 Package-owned secrets are rendered from chart values rather than baked into templates. Package-external secrets carry only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. Every package also exposes `DOMAIN` for generated endpoints and `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.
@@ -27,7 +29,7 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 |---|---|
 | `x-uds.package.name` | Package name (default: Compose project name). |
 | `x-uds.package.namespace` | Package namespace (default: Compose project name). |
-| `x-uds.package.version` | Package version (default: `0.1.0`). |
+| `x-uds.package.version` | Package version override. A semantic upstream version receives `-uds.0`; an existing `<upstream>-uds.<sub-version>` value is preserved. |
 | `x-uds.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service. |
 | `x-uds.network.allow[]` | Add network allow rules, deduplicated against inferred rules. |
 | `x-uds.monitor[]` | Add Prometheus monitoring rules, with service metadata inferred when possible. |

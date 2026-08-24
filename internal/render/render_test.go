@@ -34,7 +34,7 @@ services:
 	if len(app.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(app.Services))
 	}
-	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0" {
+	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0-uds.0" {
 		t.Fatalf("expected build image reference to be internalized, got %q", app.Services[0].Image)
 	}
 	if app.Services[0].Build == nil {
@@ -153,8 +153,141 @@ services:
 	if err != nil {
 		t.Fatalf("expected build without image to be supported, got %v", err)
 	}
-	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0" {
+	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0-uds.0" {
 		t.Fatalf("expected generated internal image, got %q", got)
+	}
+}
+
+func TestLoadCanonicalGeneratesUDSPackageVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		input           string
+		upstreamVersion string
+		packageVersion  string
+	}{
+		{
+			name: "published service is primary",
+			input: `name: demo
+services:
+  database:
+    image: postgres:17
+  web:
+    image: ghcr.io/acme/web:v2.4.1
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`,
+			upstreamVersion: "2.4.1",
+			packageVersion:  "2.4.1-uds.0",
+		},
+		{
+			name: "short prerelease image tag",
+			input: `name: demo
+services:
+  cache:
+    image: redis:7-alpine
+`,
+			upstreamVersion: "7.0.0-alpine",
+			packageVersion:  "7.0.0-alpine-uds.0",
+		},
+		{
+			name: "latest tag falls back",
+			input: `name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "0.1.0",
+			packageVersion:  "0.1.0-uds.0",
+		},
+		{
+			name: "local build falls back",
+			input: `name: demo
+services:
+  api:
+    build:
+      context: .
+`,
+			upstreamVersion: "0.1.0",
+			packageVersion:  "0.1.0-uds.0",
+		},
+		{
+			name: "explicit UDS version is preserved",
+			input: `name: demo
+x-uds:
+  package:
+    version: 5.6.7-uds.3
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "5.6.7",
+			packageVersion:  "5.6.7-uds.3",
+		},
+		{
+			name: "explicit upstream version receives UDS suffix",
+			input: `name: demo
+x-uds:
+  package:
+    version: "5.6"
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "5.6.0",
+			packageVersion:  "5.6.0-uds.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			if got := app.Package.UpstreamVersion; got != tt.upstreamVersion {
+				t.Fatalf("UpstreamVersion = %q, want %q", got, tt.upstreamVersion)
+			}
+			if got := app.Package.Version; got != tt.packageVersion {
+				t.Fatalf("Version = %q, want %q", got, tt.packageVersion)
+			}
+		})
+	}
+}
+
+func TestLoadCanonicalRejectsInvalidPackageVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		wantErr string
+	}{
+		{name: "non-version string", version: "latest", wantErr: `invalid x-uds.package.version: "latest" must begin with a numeric semantic version`},
+		{name: "non-string YAML value", version: "5.6", wantErr: "invalid x-uds.package.version: must be a non-empty string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte(`name: demo
+x-uds:
+  package:
+    version: ` + tt.version + `
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadCanonicalYAML() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -203,7 +336,7 @@ x-uds:
 	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
 	services := mustMap(t, buildCompose["services"])
 	api := mustMap(t, services["api"])
-	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3" {
+	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3-uds.0" {
 		t.Fatalf("expected internal API image, got %#v", got)
 	}
 	apiBuild := mustMap(t, api["build"])
@@ -225,9 +358,9 @@ x-uds:
 	for _, want := range []string{
 		"imageArchives:",
 		"path: image-archives/api.tar",
-		"zarf.internal/demo-api:1.2.3",
+		"zarf.internal/demo-api:1.2.3-uds.0",
 		"path: image-archives/base-image.tar",
-		"zarf.internal/demo-base-image:1.2.3",
+		"zarf.internal/demo-base-image:1.2.3-uds.0",
 		"redis:7.4-alpine",
 		"docker buildx bake",
 		"fs.read=/workspace",
@@ -329,7 +462,7 @@ services:
 		t.Fatalf("expected server image archive path, got %#v", archive["path"])
 	}
 	archiveImages, ok := archive["images"].([]any)
-	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:0.1.0" {
+	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:7.0.0-alpine-uds.0" {
 		t.Fatalf("expected only the built image under imageArchives, got %#v", archive["images"])
 	}
 
@@ -2684,7 +2817,8 @@ services:
 	for _, want := range []string{
 		"apiVersion: v2",
 		"name: shop",
-		"version: 0.1.0",
+		"version: 1.0.0-uds.0",
+		"appVersion: 1.0.0",
 	} {
 		if !strings.Contains(chartMeta, want) {
 			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
@@ -2706,7 +2840,7 @@ services:
 		"charts:",
 		"localPath: chart",
 		"name: shop",
-		"version: 0.1.0",
+		"version: 1.0.0-uds.0",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)

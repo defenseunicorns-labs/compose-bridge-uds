@@ -267,6 +267,15 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 	}
 
 	markBoundarySecretsExternal(services, secrets, excludedSecretRefs)
+	if !packageCfg.VersionConfigured {
+		packageCfg.UpstreamVersion = inferUpstreamVersion(services)
+		packageCfg.Version = packageCfg.UpstreamVersion + "-uds.0"
+		for i := range services {
+			if services[i].Build != nil {
+				services[i].Image = builtImageReference(packageCfg, services[i].Name)
+			}
+		}
+	}
 	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
 	for name, config := range configs {
 		if config.External && strings.TrimSpace(config.Content) == "" {
@@ -525,9 +534,10 @@ func sanitizeImageTag(value string) string {
 
 func parsePackageConfig(projectName string, raw map[string]any) (model.Package, error) {
 	config := model.Package{
-		Name:      projectName,
-		Namespace: projectName,
-		Version:   model.DefaultVersion,
+		Name:            projectName,
+		Namespace:       projectName,
+		UpstreamVersion: model.DefaultUpstreamVersion,
+		Version:         model.DefaultVersion,
 	}
 
 	rootUDS, ok := asMap(raw["x-uds"])
@@ -550,8 +560,19 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			}
 			config.Namespace = normalized
 		}
-		if value := strings.TrimSpace(asString(pkg["version"])); value != "" {
-			config.Version = value
+		if rawVersion, exists := pkg["version"]; exists {
+			value, ok := rawVersion.(string)
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
+				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: must be a non-empty string")
+			}
+			upstreamVersion, packageVersion, err := normalizeConfiguredPackageVersion(value)
+			if err != nil {
+				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: %w", err)
+			}
+			config.UpstreamVersion = upstreamVersion
+			config.Version = packageVersion
+			config.VersionConfigured = true
 		}
 	}
 
@@ -601,6 +622,121 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	}
 
 	return config, nil
+}
+
+var upstreamVersionPattern = regexp.MustCompile(`^[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?(-[0-9A-Za-z.-]+)?$`)
+var udsVersionPattern = regexp.MustCompile(`^(.+)-uds\.([0-9]+)$`)
+
+func inferUpstreamVersion(services []model.Service) string {
+	if len(services) == 0 {
+		return model.DefaultUpstreamVersion
+	}
+
+	primary := services[0]
+	for _, service := range services {
+		if serviceHasPublishedPort(service) {
+			primary = service
+			break
+		}
+	}
+	if primary.Build != nil {
+		return model.DefaultUpstreamVersion
+	}
+	tag := imageTag(primary.Image)
+	if strings.EqualFold(tag, "latest") {
+		return model.DefaultUpstreamVersion
+	}
+	version, ok := normalizeUpstreamVersion(tag)
+	if !ok {
+		return model.DefaultUpstreamVersion
+	}
+	return version
+}
+
+func serviceHasPublishedPort(service model.Service) bool {
+	for _, port := range service.Ports {
+		if port.Published {
+			return true
+		}
+	}
+	return false
+}
+
+func imageTag(image string) string {
+	reference := strings.TrimSpace(image)
+	if digest := strings.Index(reference, "@"); digest >= 0 {
+		reference = reference[:digest]
+	}
+	lastSlash := strings.LastIndex(reference, "/")
+	lastColon := strings.LastIndex(reference, ":")
+	if lastColon <= lastSlash {
+		return ""
+	}
+	return reference[lastColon+1:]
+}
+
+func normalizeConfiguredPackageVersion(value string) (string, string, error) {
+	if matches := udsVersionPattern.FindStringSubmatch(value); matches != nil {
+		upstream, ok := normalizeUpstreamVersion(matches[1])
+		if !ok {
+			return "", "", fmt.Errorf("upstream version %q must begin with a numeric semantic version", matches[1])
+		}
+		if len(matches[2]) > 1 && strings.HasPrefix(matches[2], "0") {
+			return "", "", fmt.Errorf("UDS sub-version %q must not contain leading zeroes", matches[2])
+		}
+		return upstream, upstream + "-uds." + matches[2], nil
+	}
+
+	upstream, ok := normalizeUpstreamVersion(value)
+	if !ok {
+		return "", "", fmt.Errorf("%q must begin with a numeric semantic version", value)
+	}
+	return upstream, upstream + "-uds.0", nil
+}
+
+func normalizeUpstreamVersion(value string) (string, bool) {
+	matches := upstreamVersionPattern.FindStringSubmatch(strings.TrimSpace(value))
+	if matches == nil || !validPrerelease(matches[4]) {
+		return "", false
+	}
+
+	parts := make([]string, 3)
+	for i := range parts {
+		raw := matches[i+1]
+		if raw == "" {
+			raw = "0"
+		}
+		number, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return "", false
+		}
+		parts[i] = strconv.FormatUint(number, 10)
+	}
+	return strings.Join(parts, ".") + matches[4], true
+}
+
+func validPrerelease(value string) bool {
+	if value == "" {
+		return true
+	}
+	for _, identifier := range strings.Split(strings.TrimPrefix(value, "-"), ".") {
+		if identifier == "" {
+			return false
+		}
+		if len(identifier) > 1 && identifier[0] == '0' {
+			allNumeric := true
+			for _, character := range identifier {
+				if character < '0' || character > '9' {
+					allNumeric = false
+					break
+				}
+			}
+			if allNumeric {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func normalizeCABundleConfigMap(value any) (map[string]any, error) {

@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	DefaultVersion      = "0.1.0"
-	DependencyInitImage = "busybox:1.36"
+	DefaultUpstreamVersion = "0.1.0"
+	DefaultVersion         = DefaultUpstreamVersion + "-uds.0"
+	DependencyInitImage    = "busybox:1.36"
 )
 
 type Port struct {
@@ -96,7 +97,9 @@ type Dependency struct {
 type Package struct {
 	Name              string
 	Namespace         string
+	UpstreamVersion   string
 	Version           string
+	VersionConfigured bool
 	NetworkExpose     []any
 	MonitorConfigured bool
 	Monitor           []any

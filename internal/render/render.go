@@ -578,7 +578,7 @@ func writeChartMetadata(path string, app model.App) error {
 		Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 		Type:        "application",
 		Version:     app.Package.Version,
-		AppVersion:  app.Package.Version,
+		AppVersion:  app.Package.UpstreamVersion,
 	})
 }
 
