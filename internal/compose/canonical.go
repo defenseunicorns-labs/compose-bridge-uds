@@ -563,7 +563,12 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
 	}
-	if monitor, ok := asSlice(rootUDS["monitor"]); ok {
+	if rawMonitor, exists := rootUDS["monitor"]; exists {
+		config.MonitorConfigured = true
+		monitor, ok := asSlice(rawMonitor)
+		if !ok {
+			return model.Package{}, fmt.Errorf("invalid x-uds.monitor: must be an array")
+		}
 		config.Monitor = append(config.Monitor, monitor...)
 	}
 	if len(config.AdditionalAllow) == 0 {

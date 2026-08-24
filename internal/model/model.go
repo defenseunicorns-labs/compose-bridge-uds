@@ -94,15 +94,16 @@ type Dependency struct {
 }
 
 type Package struct {
-	Name            string
-	Namespace       string
-	Version         string
-	NetworkExpose   []any
-	Monitor         []any
-	AdditionalAllow []any
-	SSOConfigured   bool
-	SSO             []any
-	CABundle        map[string]any
+	Name              string
+	Namespace         string
+	Version           string
+	NetworkExpose     []any
+	MonitorConfigured bool
+	Monitor           []any
+	AdditionalAllow   []any
+	SSOConfigured     bool
+	SSO               []any
+	CABundle          map[string]any
 }
 
 type BuildDefinition struct {

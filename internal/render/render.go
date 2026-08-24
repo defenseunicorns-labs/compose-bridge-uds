@@ -1048,6 +1048,9 @@ func buildSSO(app model.App) []any {
 }
 
 func buildMonitor(app model.App) ([]any, error) {
+	if !app.Package.MonitorConfigured {
+		return buildInferredMonitors(app), nil
+	}
 	if len(app.Package.Monitor) == 0 {
 		return nil, nil
 	}
@@ -1093,6 +1096,78 @@ func buildMonitor(app model.App) ([]any, error) {
 	}
 
 	return enriched, nil
+}
+
+var wellKnownMetricsPorts = map[int]struct{}{
+	9090: {}, // Prometheus
+	9100: {}, // Prometheus Node Exporter
+	9115: {}, // Prometheus Blackbox Exporter
+	9121: {}, // Prometheus Redis Exporter
+	9153: {}, // CoreDNS metrics
+	9187: {}, // Prometheus PostgreSQL Exporter
+	9256: {}, // Prometheus Process Exporter
+}
+
+func buildInferredMonitors(app model.App) []any {
+	var monitors []any
+	for _, svc := range app.Services {
+		metricsPorts := inferredMetricsPorts(svc)
+		for _, port := range metricsPorts {
+			selector := serviceSelector(svc.Name)
+			monitors = append(monitors, map[string]any{
+				"description": fmt.Sprintf("Metrics for Compose service %s on port %d", svc.Name, port.Number),
+				"selector":    selector,
+				"podSelector": selector,
+				"portName":    buildPortName(port),
+				"targetPort":  port.Number,
+				"path":        "/metrics",
+				"kind":        "ServiceMonitor",
+			})
+		}
+	}
+	return monitors
+}
+
+func inferredMetricsPorts(svc model.Service) []model.Port {
+	environmentPorts := metricsEnvironmentPorts(svc.Env)
+	ports := make([]model.Port, 0, len(svc.Ports))
+	for _, port := range svc.Ports {
+		if !strings.EqualFold(port.Protocol, "TCP") {
+			continue
+		}
+		_, wellKnown := wellKnownMetricsPorts[port.Number]
+		_, configuredByEnvironment := environmentPorts[port.Number]
+		if isMetricsPortName(port.Name) || wellKnown || configuredByEnvironment {
+			ports = append(ports, port)
+		}
+	}
+	return ports
+}
+
+func isMetricsPortName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	for _, token := range strings.Split(normalized, "-") {
+		if token == "metrics" || token == "prometheus" {
+			return true
+		}
+	}
+	return false
+}
+
+func metricsEnvironmentPorts(environment []model.EnvVar) map[int]struct{} {
+	ports := map[int]struct{}{}
+	for _, item := range environment {
+		name := strings.ToUpper(strings.TrimSpace(item.Name))
+		if name != "METRICS_PORT" && name != "PROMETHEUS_PORT" {
+			continue
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(item.Value))
+		if err == nil && port > 0 && port <= 65535 {
+			ports[port] = struct{}{}
+		}
+	}
+	return ports
 }
 
 func enrichMonitorPortFields(entry map[string]any, svc model.Service) error {

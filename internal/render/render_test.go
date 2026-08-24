@@ -1918,6 +1918,131 @@ services:
 	}
 }
 
+func TestMonitorInferenceFromCommonComposePatterns(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+services:
+  named:
+    image: ghcr.io/acme/named:1.0.0
+    ports:
+      - name: http
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: app-metrics
+        target: 9400
+        published: "9400"
+        protocol: tcp
+  well-known:
+    image: ghcr.io/acme/exporter:1.0.0
+    expose:
+      - "9100"
+  environment:
+    image: ghcr.io/acme/environment:1.0.0
+    environment:
+      PROMETHEUS_PORT: "9191"
+    expose:
+      - "9191"
+  ordinary:
+    image: ghcr.io/acme/ordinary:1.0.0
+    expose:
+      - "8080"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	monitors, ok := spec["monitor"].([]any)
+	if !ok || len(monitors) != 3 {
+		t.Fatalf("expected 3 inferred monitors, got %#v", spec["monitor"])
+	}
+	wantPorts := map[int]string{
+		9400: "app-metrics",
+		9100: "port-9100-tcp",
+		9191: "port-9191-tcp",
+	}
+	for i := range monitors {
+		monitor := mustMap(t, monitors[i])
+		target, ok := monitor["targetPort"].(int)
+		if !ok {
+			t.Fatalf("monitor[%d].targetPort = %#v, want int", i, monitor["targetPort"])
+		}
+		wantName, ok := wantPorts[target]
+		if !ok {
+			t.Fatalf("monitor[%d].targetPort = %d, want one of %#v", i, target, wantPorts)
+		}
+		if got := monitor["portName"]; got != wantName {
+			t.Fatalf("monitor[%d].portName = %#v, want %q", i, got, wantName)
+		}
+		if got := monitor["path"]; got != "/metrics" {
+			t.Fatalf("monitor[%d].path = %#v, want /metrics", i, got)
+		}
+		if got := monitor["kind"]; got != "ServiceMonitor" {
+			t.Fatalf("monitor[%d].kind = %#v, want ServiceMonitor", i, got)
+		}
+	}
+}
+
+func TestExplicitMonitorConfigurationDisablesInference(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor: []
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - name: metrics
+        target: 9090
+        published: "9090"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if !app.Package.MonitorConfigured {
+		t.Fatal("expected explicit x-uds.monitor to be tracked")
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	if strings.Contains(udsPackage, "monitor:") {
+		t.Fatalf("did not expect inferred monitors when x-uds.monitor is explicitly empty\n%s", udsPackage)
+	}
+}
+
+func TestInvalidMonitorConfigurationIsRejected(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor: disabled
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil || !strings.Contains(err.Error(), "invalid x-uds.monitor: must be an array") {
+		t.Fatalf("LoadCanonicalYAML() error = %v, want invalid monitor array error", err)
+	}
+}
+
 func TestMonitorAuthorizationDefaultsAndExplicitFields(t *testing.T) {
 	t.Parallel()
 
