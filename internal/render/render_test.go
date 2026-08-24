@@ -2771,7 +2771,7 @@ secrets:
 	}
 
 	readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
-	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
+	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace", "zarf package create . --flavor upstream", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
 		if !strings.Contains(readme, want) {
 			t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
 		}
@@ -2797,6 +2797,79 @@ secrets:
 		if !strings.Contains(dependencies, want) {
 			t.Fatalf("expected generated dependency documentation to contain %q\n%s", want, dependencies)
 		}
+	}
+}
+
+func TestWritePackageInfersSinglePackageFlavor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		flavor string
+	}{
+		{
+			name: "all Iron Bank images",
+			input: `name: hardened
+services:
+  api:
+    image: registry1.dso.mil/ironbank/opensource/acme/api:1.0.0
+  database:
+    image: registry1.dso.mil/ironbank/opensource/postgres/postgresql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`,
+			flavor: "registry1",
+		},
+		{
+			name: "mixed image registries",
+			input: `name: mixed
+services:
+  api:
+    image: registry1.dso.mil/ironbank/opensource/acme/api:1.0.0
+  database:
+    image: postgres:17
+`,
+			flavor: "upstream",
+		},
+		{
+			name: "local build",
+			input: `name: local
+services:
+  api:
+    build:
+      context: .
+`,
+			flavor: "upstream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+			components, ok := zarfConfig["components"].([]any)
+			if !ok || len(components) != 1 {
+				t.Fatalf("expected one Zarf component, got %#v", zarfConfig["components"])
+			}
+			component := mustMap(t, components[0])
+			only := mustMap(t, component["only"])
+			if got := only["flavor"]; got != tt.flavor {
+				t.Fatalf("only.flavor = %#v, want %q", got, tt.flavor)
+			}
+
+			readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
+			if want := "zarf package create . --flavor " + tt.flavor; !strings.Contains(readme, want) {
+				t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
+			}
+		})
 	}
 }
 

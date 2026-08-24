@@ -4,6 +4,8 @@ The bridge maps the [Compose Specification](https://compose-spec.io/) to Kuberne
 
 Generated packages include consumer documentation under `out/docs/`. The top-level `documentation` map in `out/zarf.yaml` embeds the generated package readme, deploy-time configuration reference, and application dependency reference so they can be inspected from the packaged artifact.
 
+The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
+
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
 Package-owned secrets are rendered from chart values rather than baked into templates. Package-external secrets carry only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. Every package also exposes `DOMAIN` for generated endpoints and `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.

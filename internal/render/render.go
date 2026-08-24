@@ -210,30 +210,32 @@ func WritePackage(root string, app model.App) error {
 		}
 	}
 
-	if err := writePackageDocumentation(root, app, secretVariables, environmentVariables); err != nil {
-		return err
-	}
-
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
 		images = append(images, buildComponentImages(svc, servicePorts)...)
 	}
+	images = dedupeStrings(images)
+	flavor := inferPackageFlavor(app, images)
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, dedupeStrings(images)); err != nil {
+	if err := writePackageDocumentation(root, app, secretVariables, environmentVariables, flavor); err != nil {
+		return err
+	}
+
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, images, flavor); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string) error {
+func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string, flavor string) error {
 	docsDir := filepath.Join(root, "docs")
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
 		return fmt.Errorf("create documentation directory %s: %w", docsDir, err)
 	}
 
 	documents := map[string]string{
-		"README.md":        buildPackageReadme(app),
+		"README.md":        buildPackageReadme(app, flavor),
 		"configuration.md": buildConfigurationDocumentation(app, secretVariables, environmentVariables),
 		"dependencies.md":  buildDependencyDocumentation(app),
 	}
@@ -246,10 +248,16 @@ func writePackageDocumentation(root string, app model.App, secretVariables map[s
 	return nil
 }
 
-func buildPackageReadme(app model.App) string {
+func buildPackageReadme(app model.App, flavor string) string {
 	return fmt.Sprintf(`# %s
 
 This UDS package was generated from Docker Compose. It deploys the %s application to the %s namespace.
+
+## Build
+
+Build the generated package with its inferred flavor:
+
+%s
 
 ## Package documentation
 
@@ -257,7 +265,7 @@ This UDS package was generated from Docker Compose. It deploys the %s applicatio
 - [Dependencies](dependencies.md) lists the application services, images, and service dependencies.
 
 Regenerate this package after changing the source Compose project; generated files are not intended for manual editing.
-`, app.Package.Name, app.Package.Name, app.Package.Namespace)
+`, app.Package.Name, app.Package.Name, app.Package.Namespace, "```sh\nzarf package create . --flavor "+flavor+"\n```")
 }
 
 func buildConfigurationDocumentation(app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string) string {
@@ -662,6 +670,7 @@ func writeZarfConfig(
 	secretVariables map[string]secretVariableNames,
 	environmentVariables map[string]map[string]string,
 	images []string,
+	flavor string,
 ) error {
 	variables := []zarfVariable{
 		{
@@ -739,6 +748,7 @@ func writeZarfConfig(
 		Name:        app.Package.Name,
 		Required:    true,
 		Description: fmt.Sprintf("Deploy %s", app.Package.Name),
+		Only:        &zarfComponentOnly{Flavor: flavor},
 		Charts:      []zarfChart{chart},
 		Images:      dedupeStrings(images),
 		Actions:     buildCreateActions(app),
@@ -763,6 +773,35 @@ func writeZarfConfig(
 		return fmt.Errorf("write zarf config: %w", err)
 	}
 	return nil
+}
+
+func inferPackageFlavor(app model.App, images []string) string {
+	if len(images) == 0 {
+		return "upstream"
+	}
+	for _, svc := range app.Services {
+		if svc.Build != nil {
+			return "upstream"
+		}
+	}
+	for _, image := range images {
+		if imageRegistry(image) != "registry1.dso.mil" {
+			return "upstream"
+		}
+	}
+	return "registry1"
+}
+
+func imageRegistry(image string) string {
+	parts := strings.SplitN(strings.TrimSpace(image), "/", 2)
+	if len(parts) < 2 {
+		return "docker.io"
+	}
+	registry := strings.ToLower(parts[0])
+	if !strings.ContainsAny(registry, ".:") && registry != "localhost" {
+		return "docker.io"
+	}
+	return registry
 }
 
 func buildDeployment(
@@ -2324,10 +2363,15 @@ type zarfComponent struct {
 	Name          string                `yaml:"name"`
 	Required      bool                  `yaml:"required"`
 	Description   string                `yaml:"description,omitempty"`
+	Only          *zarfComponentOnly    `yaml:"only,omitempty"`
 	Charts        []zarfChart           `yaml:"charts,omitempty"`
 	Images        []string              `yaml:"images,omitempty"`
 	ImageArchives []zarfImageArchive    `yaml:"imageArchives,omitempty"`
 	Actions       *zarfComponentActions `yaml:"actions,omitempty"`
+}
+
+type zarfComponentOnly struct {
+	Flavor string `yaml:"flavor"`
 }
 
 type zarfImageArchive struct {
