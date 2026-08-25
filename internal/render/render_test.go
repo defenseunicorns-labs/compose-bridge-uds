@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	"defenseunicorns/uds-compose-bridge/internal/compose"
 	"defenseunicorns/uds-compose-bridge/internal/model"
@@ -2898,6 +2900,229 @@ services:
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
 		}
+	}
+}
+
+func TestWritePackageExternalizesServiceResources(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    environment:
+      LOG_LEVEL: info
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+        limits:
+          cpus: "1"
+          memory: 512M
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+    deploy:
+      resources:
+        reservations:
+          memory: 128M
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	resources := mustMap(t, chartValues["resources"])
+	apiResources := mustMap(t, resources["api"])
+	apiRequests := mustMap(t, apiResources["requests"])
+	apiLimits := mustMap(t, apiResources["limits"])
+	if apiRequests["cpu"] != "0.25" || apiRequests["memory"] != "256Mi" || apiLimits["cpu"] != "1" || apiLimits["memory"] != "512Mi" {
+		t.Fatalf("unexpected API chart resource defaults: %#v", apiResources)
+	}
+	workerResources := mustMap(t, resources["worker"])
+	workerRequests := mustMap(t, workerResources["requests"])
+	workerLimits := mustMap(t, workerResources["limits"])
+	if workerRequests["cpu"] != "" || workerRequests["memory"] != "128Mi" || workerLimits["cpu"] != "" || workerLimits["memory"] != "" {
+		t.Fatalf("expected partial worker resources to retain explicit empty defaults: %#v", workerResources)
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, name := range []string{
+		"API_CPU_REQUEST", "API_MEMORY_REQUEST", "API_CPU_LIMIT", "API_MEMORY_LIMIT",
+		"WORKER_CPU_REQUEST", "WORKER_MEMORY_REQUEST", "WORKER_CPU_LIMIT", "WORKER_MEMORY_LIMIT",
+		"API_LOG_LEVEL", "DOMAIN", "ADDITIONAL_NETWORK_ALLOW",
+	} {
+		if !strings.Contains(zarfValues, "###ZARF_VAR_"+name+"###") {
+			t.Fatalf("expected shared Zarf values to contain %s\n%s", name, zarfValues)
+		}
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	variables := map[string]map[string]any{}
+	for _, raw := range zarfConfig["variables"].([]any) {
+		variable := mustMap(t, raw)
+		variables[variable["name"].(string)] = variable
+	}
+	defaults := map[string]string{
+		"API_CPU_REQUEST": "0.25", "API_MEMORY_REQUEST": "256Mi", "API_CPU_LIMIT": "1", "API_MEMORY_LIMIT": "512Mi",
+		"WORKER_CPU_REQUEST": "", "WORKER_MEMORY_REQUEST": "128Mi", "WORKER_CPU_LIMIT": "", "WORKER_MEMORY_LIMIT": "",
+	}
+	for name, wantDefault := range defaults {
+		variable := variables[name]
+		if variable == nil || variable["default"] != wantDefault {
+			t.Fatalf("variable %s = %#v, want default %q", name, variable, wantDefault)
+		}
+		if _, exists := variable["prompt"]; exists {
+			t.Fatalf("resource variable %s must not prompt: %#v", name, variable)
+		}
+		if _, exists := variable["sensitive"]; exists {
+			t.Fatalf("resource variable %s must not be sensitive: %#v", name, variable)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		`index $allResources "api"`,
+		`if or $cpuRequest $memoryRequest $cpuLimit $memoryLimit`,
+		`if or $cpuRequest $memoryRequest`,
+		`if or $cpuLimit $memoryLimit`,
+		`cpu: "{{ . }}"`,
+		`memory: "{{ . }}"`,
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected resource template to contain %q\n%s", want, deployment)
+		}
+	}
+	if strings.Contains(deployment, "cpu: 0.25") || strings.Contains(deployment, "memory: 256Mi") {
+		t.Fatalf("deployment must read resources from Helm values rather than embedding Compose defaults\n%s", deployment)
+	}
+}
+
+func TestDeploymentResourceTemplateAppliesOverridesAndOmitsEmptyMaps(t *testing.T) {
+	t.Parallel()
+
+	app := model.App{
+		Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+		Services: []model.Service{{Name: "api", Image: "api:1"}},
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	deploymentTemplate := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+
+	tests := []struct {
+		name      string
+		requests  map[string]any
+		limits    map[string]any
+		wantField bool
+		wantCPU   string
+		wantMem   string
+	}{
+		{name: "empty", requests: map[string]any{"cpu": "", "memory": ""}, limits: map[string]any{"cpu": "", "memory": ""}},
+		{name: "partial override", requests: map[string]any{"cpu": "350m", "memory": ""}, limits: map[string]any{"cpu": "", "memory": ""}, wantField: true, wantCPU: "350m"},
+		{name: "independent request and limit overrides", requests: map[string]any{"cpu": "500m", "memory": ""}, limits: map[string]any{"cpu": "", "memory": "1Gi"}, wantField: true, wantCPU: "500m", wantMem: "1Gi"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl, err := template.New("deployment").Funcs(template.FuncMap{
+				"dict": func(...any) map[string]any { return map[string]any{} },
+				"default": func(fallback, value any) any {
+					if value == nil || value == "" {
+						return fallback
+					}
+					return value
+				},
+			}).Parse(deploymentTemplate)
+			if err != nil {
+				t.Fatalf("parse deployment template: %v", err)
+			}
+			values := map[string]any{"resources": map[string]any{"api": map[string]any{"requests": tt.requests, "limits": tt.limits}}}
+			var rendered bytes.Buffer
+			if err := tmpl.Execute(&rendered, map[string]any{"Values": values}); err != nil {
+				t.Fatalf("render deployment template: %v", err)
+			}
+			var deployment map[string]any
+			if err := yamlv3.Unmarshal(rendered.Bytes(), &deployment); err != nil {
+				t.Fatalf("decode rendered deployment: %v\n%s", err, rendered.String())
+			}
+			containers := mustMap(t, mustMap(t, mustMap(t, deployment["spec"])["template"])["spec"])["containers"].([]any)
+			container := mustMap(t, containers[0])
+			resources, exists := container["resources"]
+			if exists != tt.wantField {
+				t.Fatalf("resources field exists = %t, want %t\n%s", exists, tt.wantField, rendered.String())
+			}
+			if !tt.wantField {
+				return
+			}
+			resourceMap := mustMap(t, resources)
+			if tt.wantCPU != "" {
+				requests := mustMap(t, resourceMap["requests"])
+				if requests["cpu"] != tt.wantCPU || requests["memory"] != nil {
+					t.Fatalf("unexpected rendered requests: %#v", requests)
+				}
+			}
+			if tt.wantMem != "" {
+				limits := mustMap(t, resourceMap["limits"])
+				if limits["memory"] != tt.wantMem || limits["cpu"] != nil {
+					t.Fatalf("unexpected rendered limits: %#v", limits)
+				}
+			} else if _, exists := resourceMap["limits"]; exists {
+				t.Fatalf("expected empty limits map to be omitted: %#v", resourceMap)
+			}
+		})
+	}
+}
+
+func TestWritePackageRejectsResourceVariableCollisions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		app     model.App
+		wantErr string
+	}{
+		{
+			name: "environment claims automatic resource variable",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "api:1", Env: []model.EnvVar{{Name: "CPU_LIMIT", Value: "custom"}}}},
+			},
+			wantErr: `environment variable "CPU_LIMIT" on service "api" generates Zarf variable "API_CPU_LIMIT", which conflicts with automatic resource variable for service "api"`,
+		},
+		{
+			name: "secret claims automatic resource variable",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "api:1"}},
+				Secrets:  map[string]model.Secret{"api-cpu-limit": {Name: "api-cpu-limit"}},
+			},
+			wantErr: `compose secret "api-cpu-limit" generates Zarf variable "API_CPU_LIMIT", which conflicts with automatic resource variable for service "api"`,
+		},
+		{
+			name: "automatic resources collide across normalized service names",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api-worker", Image: "api:1"}, {Name: "api_worker", Image: "worker:1"}},
+			},
+			wantErr: `automatic resource variable for service "api_worker" generates Zarf variable "API_WORKER_CPU_REQUEST", which conflicts with automatic resource variable for service "api-worker"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := render.WritePackage(t.TempDir(), tt.app)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("WritePackage() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

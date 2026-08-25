@@ -1206,10 +1206,30 @@ func formatNanoCPUs(value types.NanoCPUs) string {
 }
 
 func formatUnitBytes(value types.UnitBytes) string {
-	if int64(value) <= 0 {
+	bytes := int64(value)
+	if bytes <= 0 {
 		return ""
 	}
-	return strconv.FormatInt(int64(value), 10)
+
+	// Prefer the largest exact Kubernetes binary quantity. Keeping the value
+	// exact avoids silently changing the Compose limit or reservation.
+	units := []struct {
+		suffix string
+		bytes  int64
+	}{
+		{suffix: "Ei", bytes: 1 << 60},
+		{suffix: "Pi", bytes: 1 << 50},
+		{suffix: "Ti", bytes: 1 << 40},
+		{suffix: "Gi", bytes: 1 << 30},
+		{suffix: "Mi", bytes: 1 << 20},
+		{suffix: "Ki", bytes: 1 << 10},
+	}
+	for _, unit := range units {
+		if bytes%unit.bytes == 0 {
+			return strconv.FormatInt(bytes/unit.bytes, 10) + unit.suffix
+		}
+	}
+	return strconv.FormatInt(bytes, 10)
 }
 
 func normalizeProfiles(raw []string) []string {
