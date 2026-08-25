@@ -3781,6 +3781,95 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 	}
 }
 
+func TestWritePackageSupportsXUDSSpecKeys(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  spec:
+    network:
+      expose:
+        - service: api
+          host: custom-api
+    monitor:
+      - service: api
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	for _, want := range []string{"host: custom-api", "service: api"} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
+		}
+	}
+}
+
+func TestWritePackageMapsMetadataAnnotationsAndLabels(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  metadata:
+    labels:
+      app.kubernetes.io/part-of: platform
+    annotations:
+      dev.uds.title: Custom Title
+      dev.uds.categories: Software Dev
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsMetadata := mustMap(t, udsPackage["metadata"])
+	udsLabels := mustMap(t, udsMetadata["labels"])
+	if got := udsLabels["app.kubernetes.io/part-of"]; got != "platform" {
+		t.Fatalf("UDS package label app.kubernetes.io/part-of = %#v, want platform", got)
+	}
+	udsAnnotations := mustMap(t, udsMetadata["annotations"])
+	if got := udsAnnotations["dev.uds.title"]; got != "Custom Title" {
+		t.Fatalf("UDS package annotation dev.uds.title = %#v, want Custom Title", got)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	zarfAnnotations := mustMap(t, mustMap(t, zarfConfig["metadata"])["annotations"])
+	for key, want := range map[string]string{
+		"dev.uds.title":      "Custom Title",
+		"dev.uds.categories": "Software Dev",
+	} {
+		if got := zarfAnnotations[key]; got != want {
+			t.Fatalf("zarf metadata annotation %q = %#v, want %q", key, got, want)
+		}
+	}
+	if _, ok := zarfAnnotations["dev.uds.icon"]; !ok {
+		t.Fatalf("expected generated dev.uds.icon annotation, got %#v", zarfAnnotations)
+	}
+}
+
 func firstExposeRule(t *testing.T, path string) map[string]any {
 	t.Helper()
 	udsPackage := readUDSPackageYAMLMap(t, path)

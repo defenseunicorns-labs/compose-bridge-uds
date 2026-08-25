@@ -589,6 +589,65 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 		}
 	}
 
+	if rawMetadata, exists := rootUDS["metadata"]; exists {
+		metadata, ok := asMap(rawMetadata)
+		if !ok {
+			return model.Package{}, fmt.Errorf("invalid x-uds.metadata: must be an object")
+		}
+		if value := strings.TrimSpace(asString(metadata["name"])); value != "" {
+			normalized, err := normalizeName(value)
+			if err != nil {
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.name: %w", err)
+			}
+			config.Name = normalized
+			config.Namespace = normalized
+		}
+		if rawVersion, exists := metadata["version"]; exists {
+			value, ok := rawVersion.(string)
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: must be a non-empty string")
+			}
+			upstreamVersion, packageVersion, err := normalizeConfiguredPackageVersion(value)
+			if err != nil {
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: %w", err)
+			}
+			config.UpstreamVersion = upstreamVersion
+			config.Version = packageVersion
+			config.VersionConfigured = true
+		}
+		if rawLabels, exists := metadata["labels"]; exists {
+			labels, err := normalizeStringMap(rawLabels, "x-uds.metadata.labels")
+			if err != nil {
+				return model.Package{}, err
+			}
+			if len(labels) > 0 {
+				config.Labels = labels
+			}
+		}
+		if rawAnnotations, exists := metadata["annotations"]; exists {
+			annotations, err := normalizeStringMap(rawAnnotations, "x-uds.metadata.annotations")
+			if err != nil {
+				return model.Package{}, err
+			}
+			if len(annotations) > 0 {
+				config.Annotations = annotations
+			}
+		}
+	}
+
+	rawSpec, exists := rootUDS["spec"]
+	if exists {
+		spec, ok := asMap(rawSpec)
+		if !ok {
+			return model.Package{}, fmt.Errorf("invalid x-uds.spec: must be an object")
+		}
+		if err := parseSpecConfig(&config, spec, "x-uds.spec"); err != nil {
+			return model.Package{}, err
+		}
+		return config, nil
+	}
+
 	if network, ok := asMap(rootUDS["network"]); ok {
 		if expose, ok := asSlice(network["expose"]); ok {
 			config.NetworkExpose = append(config.NetworkExpose, expose...)
@@ -610,23 +669,20 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
 	}
-
 	if sso, ok := asSlice(rootUDS["sso"]); ok {
 		config.SSOConfigured = true
 		config.SSO = append(config.SSO, sso...)
 	}
-
 	if rawCABundle, exists := rootUDS["caBundle"]; exists {
 		caBundle, ok := asMap(rawCABundle)
 		if !ok {
 			return model.Package{}, fmt.Errorf("invalid x-uds.caBundle: must be an object")
 		}
-
 		for key, value := range caBundle {
 			if key != "configMap" {
 				return model.Package{}, fmt.Errorf("invalid x-uds.caBundle.%s: unsupported field", key)
 			}
-			configMap, err := normalizeCABundleConfigMap(value)
+			configMap, err := normalizeCABundleConfigMap(value, "x-uds.caBundle.configMap")
 			if err != nil {
 				return model.Package{}, err
 			}
@@ -635,6 +691,66 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	}
 
 	return config, nil
+}
+
+func parseSpecConfig(config *model.Package, spec map[string]any, path string) error {
+	if rawNetwork, exists := spec["network"]; exists {
+		network, ok := asMap(rawNetwork)
+		if !ok {
+			return fmt.Errorf("invalid %s.network: must be an object", path)
+		}
+		if rawExpose, exists := network["expose"]; exists {
+			expose, ok := asSlice(rawExpose)
+			if !ok {
+				return fmt.Errorf("invalid %s.network.expose: must be an array", path)
+			}
+			config.NetworkExpose = append(config.NetworkExpose, expose...)
+		}
+		if rawAllow, exists := network["allow"]; exists {
+			allow, ok := asSlice(rawAllow)
+			if !ok {
+				return fmt.Errorf("invalid %s.network.allow: must be an array", path)
+			}
+			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
+		}
+	}
+	if rawMonitor, exists := spec["monitor"]; exists {
+		config.MonitorConfigured = true
+		monitor, ok := asSlice(rawMonitor)
+		if !ok {
+			return fmt.Errorf("invalid %s.monitor: must be an array", path)
+		}
+		config.Monitor = append(config.Monitor, monitor...)
+	}
+
+	if rawSSO, exists := spec["sso"]; exists {
+		sso, ok := asSlice(rawSSO)
+		if !ok {
+			return fmt.Errorf("invalid %s.sso: must be an array", path)
+		}
+		config.SSOConfigured = true
+		config.SSO = append(config.SSO, sso...)
+	}
+
+	if rawCABundle, exists := spec["caBundle"]; exists {
+		caBundle, ok := asMap(rawCABundle)
+		if !ok {
+			return fmt.Errorf("invalid %s.caBundle: must be an object", path)
+		}
+
+		for key, value := range caBundle {
+			if key != "configMap" {
+				return fmt.Errorf("invalid %s.caBundle.%s: unsupported field", path, key)
+			}
+			configMap, err := normalizeCABundleConfigMap(value, path+".caBundle.configMap")
+			if err != nil {
+				return err
+			}
+			config.CABundle = map[string]any{"configMap": configMap}
+		}
+	}
+
+	return nil
 }
 
 var upstreamVersionPattern = regexp.MustCompile(`^[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?(-[0-9A-Za-z.-]+)?$`)
@@ -752,10 +868,10 @@ func validPrerelease(value string) bool {
 	return true
 }
 
-func normalizeCABundleConfigMap(value any) (map[string]any, error) {
+func normalizeCABundleConfigMap(value any, field string) (map[string]any, error) {
 	configMap, ok := asMap(value)
 	if !ok {
-		return nil, fmt.Errorf("invalid x-uds.caBundle.configMap: must be an object")
+		return nil, fmt.Errorf("invalid %s: must be an object", field)
 	}
 
 	normalized := map[string]any{}
@@ -764,17 +880,17 @@ func normalizeCABundleConfigMap(value any) (map[string]any, error) {
 		case "name", "key":
 			value := strings.TrimSpace(asString(raw))
 			if value == "" {
-				return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: must be a non-empty string", key)
+				return nil, fmt.Errorf("invalid %s.%s: must be a non-empty string", field, key)
 			}
 			normalized[key] = value
 		case "labels", "annotations":
-			value, err := normalizeStringMap(raw, fmt.Sprintf("x-uds.caBundle.configMap.%s", key))
+			value, err := normalizeStringMap(raw, fmt.Sprintf("%s.%s", field, key))
 			if err != nil {
 				return nil, err
 			}
 			normalized[key] = value
 		default:
-			return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: unsupported field", key)
+			return nil, fmt.Errorf("invalid %s.%s: unsupported field", field, key)
 		}
 	}
 
