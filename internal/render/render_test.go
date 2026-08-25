@@ -3844,7 +3844,7 @@ services:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 
-	udsPackage := readYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	udsMetadata := mustMap(t, udsPackage["metadata"])
 	udsLabels := mustMap(t, udsMetadata["labels"])
 	if got := udsLabels["app.kubernetes.io/part-of"]; got != "platform" {
