@@ -51,17 +51,18 @@ secrets:
     file: ./app-secret.txt
 
 x-uds:
-  network:
-    expose:
+  package:
+    network:
+      expose:
+        - service: server
+          host: hello-world
+    monitor:
       - service: server
-        host: hello-world
-  monitor:
-    - service: server
-      description: Server metrics
-  # caBundle:
-  #   configMap:
-  #     name: uds-trust-bundle
-  #     key: ca-bundle.pem
-  #     labels:
-  #       uds.dev/pod-reload: "true"
-  # sso: []
+        description: Server metrics
+    # caBundle:
+    #   configMap:
+    #     name: uds-trust-bundle
+    #     key: ca-bundle.pem
+    #     labels:
+    #       uds.dev/pod-reload: "true"
+    # sso: []

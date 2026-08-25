@@ -234,6 +234,124 @@ services:
 	}
 }
 
+func TestXUDSNameOverridesPackageName(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: my-project
+x-uds:
+  name: custom-name
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if got := app.Package.Name; got != "custom-name" {
+		t.Fatalf("Package.Name = %q, want custom-name", got)
+	}
+	// Namespace is always inferred from the project name, not x-uds.name
+	if got := app.Package.Namespace; got != "my-project" {
+		t.Fatalf("Package.Namespace = %q, want my-project", got)
+	}
+}
+
+func TestXUDSVersionOverridesInferredVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		version         string
+		upstreamVersion string
+		packageVersion  string
+	}{
+		{
+			name:            "explicit semver with uds sub-version",
+			version:         "1.2.3-uds.0",
+			upstreamVersion: "1.2.3",
+			packageVersion:  "1.2.3-uds.0",
+		},
+		{
+			name:            "explicit semver without uds sub-version",
+			version:         "2.0.0",
+			upstreamVersion: "2.0.0",
+			packageVersion:  "2.0.0-uds.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte(fmt.Sprintf(`name: demo
+x-uds:
+  version: %s
+services:
+  web:
+    image: ghcr.io/acme/web:9.9.9
+`, tt.version))
+
+			app, err := compose.LoadCanonicalYAML([]byte(input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			if got := app.Package.UpstreamVersion; got != tt.upstreamVersion {
+				t.Fatalf("UpstreamVersion = %q, want %q", got, tt.upstreamVersion)
+			}
+			if got := app.Package.Version; got != tt.packageVersion {
+				t.Fatalf("Version = %q, want %q", got, tt.packageVersion)
+			}
+			if !app.Package.VersionConfigured {
+				t.Fatal("expected VersionConfigured to be true")
+			}
+		})
+	}
+}
+
+func TestXUDSNameAndVersionRejectInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{
+			name: "empty name",
+			input: `name: demo
+x-uds:
+  name: ""
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+`,
+			wantErr: "invalid x-uds.name",
+		},
+		{
+			name: "invalid version",
+			input: `name: demo
+x-uds:
+  version: not-a-semver
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+`,
+			wantErr: "invalid x-uds.version",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestWritePackageGeneratesBuildWorkspaceAndImageArchives(t *testing.T) {
 	t.Parallel()
 
@@ -722,12 +840,13 @@ func TestLoadCanonicalRejectsXUDSReferenceToExcludedService(t *testing.T) {
 	t.Parallel()
 
 	for _, extension := range []string{
-		"network:\n    expose:\n      - service: db",
-		"monitor:\n    - service: db",
+		"network:\n      expose:\n        - service: db",
+		"monitor:\n      - service: db",
 	} {
 		input := []byte(fmt.Sprintf(`name: demo
 x-uds:
-  %s
+  package:
+    %s
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -900,11 +1019,12 @@ func TestWritePackagePreservesDifferentNetworkMemberships(t *testing.T) {
 
 	input := []byte(`name: demo-ns
 x-uds:
-  network:
-    allow:
-      - description: external-api
-        direction: Egress
-        remoteHost: api.example.com
+  package:
+    network:
+      allow:
+        - description: external-api
+          direction: Egress
+          remoteHost: api.example.com
 services:
   frontend:
     image: ghcr.io/acme/frontend:1.0.0
@@ -1040,14 +1160,15 @@ func TestWritePackageAddsDeployTimeNetworkAllow(t *testing.T) {
 
 	input := []byte(`name: demo
 x-uds:
-  network:
-    allow:
-      - direction: Egress
-        selector:
-          app.kubernetes.io/name: api
-        remoteNamespace: platform-service
-        ports:
-          - 8443
+  package:
+    network:
+      allow:
+        - direction: Egress
+          selector:
+            app.kubernetes.io/name: api
+          remoteNamespace: platform-service
+          ports:
+            - 8443
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -1138,7 +1259,8 @@ func TestWritePackageAddsDomainPackageInterface(t *testing.T) {
 
 	input := []byte(`name: worker
 x-uds:
-  sso: []
+  package:
+    sso: []
 services:
   worker:
     image: ghcr.io/acme/worker:1.0.0
@@ -1223,10 +1345,11 @@ func TestWritePackageWithConfigAndExpose(t *testing.T) {
 
 	input := []byte(`name: demo-ns
 x-uds:
-  network:
-    expose:
-      - service: api
-        host: app
+  package:
+    network:
+      expose:
+        - service: api
+          host: app
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -1488,9 +1611,10 @@ func TestWritePackageSanitizesComposePortNames(t *testing.T) {
 
 	input := []byte(`name: port-name-demo
 x-uds:
-  monitor:
-    - service: web
-      targetPort: 8080
+  package:
+    monitor:
+      - service: web
+        targetPort: 8080
 services:
   web:
     image: ghcr.io/acme/web:1.0.0
@@ -1708,9 +1832,10 @@ func TestExposeEnrichmentFillsDefaults(t *testing.T) {
 
 	input := []byte(`name: myapp
 x-uds:
-  network:
-    expose:
-      - service: web
+  package:
+    network:
+      expose:
+        - service: web
 services:
   web:
     image: nginx:latest
@@ -1786,11 +1911,12 @@ func TestExplicitEmptySSODisablesAutoGeneration(t *testing.T) {
 
 	input := []byte(`name: myapp
 x-uds:
-  network:
-    expose:
-      - service: web
-        host: app
-  sso: []
+  package:
+    network:
+      expose:
+        - service: web
+          host: app
+    sso: []
 services:
   web:
     image: nginx:latest
@@ -1832,8 +1958,9 @@ func TestSSOEnrichment(t *testing.T) {
 
 	input := []byte(`name: myapp
 x-uds:
-  sso:
-    - clientId: custom-id
+  package:
+    sso:
+      - clientId: custom-id
 services:
   web:
     image: nginx:latest
@@ -1906,11 +2033,12 @@ func TestSSOExplicitRedirectURIsRemainLiteralAndOrdered(t *testing.T) {
 
 	input := []byte(`name: myapp
 x-uds:
-  sso:
-    - redirectUris:
-        - https://first.example/callback
-        - "https://custom.{{ .Values.uds.domain }}/callback"
-        - https://last.uds.dev/callback
+  package:
+    sso:
+      - redirectUris:
+          - https://first.example/callback
+          - "https://custom.{{ .Values.uds.domain }}/callback"
+          - https://last.uds.dev/callback
 services:
   web:
     image: nginx:latest
@@ -1983,9 +2111,10 @@ func TestMonitorEnrichment(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: api
-      description: API metrics
+  package:
+    monitor:
+      - service: api
+        description: API metrics
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2102,7 +2231,8 @@ func TestExplicitMonitorConfigurationDisablesInference(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor: []
+  package:
+    monitor: []
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2136,14 +2266,15 @@ func TestInvalidMonitorConfigurationIsRejected(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor: disabled
+  package:
+    monitor: disabled
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
 `)
 
 	_, err := compose.LoadCanonicalYAML(input)
-	if err == nil || !strings.Contains(err.Error(), "invalid x-uds.monitor: must be an array") {
+	if err == nil || !strings.Contains(err.Error(), "invalid x-uds.package.monitor: must be an array") {
 		t.Fatalf("LoadCanonicalYAML() error = %v, want invalid monitor array error", err)
 	}
 }
@@ -2153,15 +2284,16 @@ func TestMonitorAuthorizationDefaultsAndExplicitFields(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: api
-      kind: PodMonitor
-      path: /custom/metrics
-      authorization:
-        credentials:
-          name: metrics-auth-secret
-          key: token
-          optional: false
+  package:
+    monitor:
+      - service: api
+        kind: PodMonitor
+        path: /custom/metrics
+        authorization:
+          credentials:
+            name: metrics-auth-secret
+            key: token
+            optional: false
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2201,9 +2333,10 @@ func TestMonitorResolvesPortNameFromTargetPort(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: api
-      targetPort: 9090
+  package:
+    monitor:
+      - service: api
+        targetPort: 9090
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2237,15 +2370,16 @@ func TestMonitorPassthroughWithoutService(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - selector:
-        app: api
-      podSelector:
-        app: api
-      portName: metrics
-      targetPort: 9090
-      path: /stats/metrics
-      kind: PodMonitor
+  package:
+    monitor:
+      - selector:
+          app: api
+        podSelector:
+          app: api
+        portName: metrics
+        targetPort: 9090
+        path: /stats/metrics
+        kind: PodMonitor
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2283,8 +2417,9 @@ func TestMonitorRejectsAmbiguousServicePorts(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: api
+  package:
+    monitor:
+      - service: api
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2312,8 +2447,9 @@ func TestMonitorRejectsUnknownService(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: missing
+  package:
+    monitor:
+      - service: missing
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2340,10 +2476,11 @@ func TestMonitorRejectsMismatchedPortNameAndTargetPort(t *testing.T) {
 
 	input := []byte(`name: metrics-demo
 x-uds:
-  monitor:
-    - service: api
-      portName: port-8080-tcp
-      targetPort: 9090
+  package:
+    monitor:
+      - service: api
+        portName: port-8080-tcp
+        targetPort: 9090
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2371,14 +2508,15 @@ func TestWritePackageRendersCABundleConfigMap(t *testing.T) {
 
 	input := []byte(`name: trust-demo
 x-uds:
-  caBundle:
-    configMap:
-      name: custom-trust-bundle
-      key: roots.pem
-      labels:
-        uds.dev/pod-reload: "true"
-      annotations:
-        uds.dev/pod-reload-selector: app=api
+  package:
+    caBundle:
+      configMap:
+        name: custom-trust-bundle
+        key: roots.pem
+        labels:
+          uds.dev/pod-reload: "true"
+        annotations:
+          uds.dev/pod-reload-selector: app=api
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2428,14 +2566,14 @@ func TestLoadCanonicalRejectsRemovedCABundleFields(t *testing.T) {
 		value   string
 		message string
 	}{
-		{name: "certs", field: "CA_BUNDLE_CERTS", value: `"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t"`, message: "invalid x-uds.caBundle.CA_BUNDLE_CERTS"},
-		{name: "dod", field: "CA_BUNDLE_INCLUDE_DOD_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS"},
-		{name: "public", field: "CA_BUNDLE_INCLUDE_PUBLIC_CERTS", value: "true", message: "invalid x-uds.caBundle.CA_BUNDLE_INCLUDE_PUBLIC_CERTS"},
+		{name: "certs", field: "CA_BUNDLE_CERTS", value: `"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t"`, message: "invalid x-uds.package.caBundle.CA_BUNDLE_CERTS"},
+		{name: "dod", field: "CA_BUNDLE_INCLUDE_DOD_CERTS", value: "true", message: "invalid x-uds.package.caBundle.CA_BUNDLE_INCLUDE_DOD_CERTS"},
+		{name: "public", field: "CA_BUNDLE_INCLUDE_PUBLIC_CERTS", value: "true", message: "invalid x-uds.package.caBundle.CA_BUNDLE_INCLUDE_PUBLIC_CERTS"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input := []byte("name: trust-demo\nx-uds:\n  caBundle:\n    " + tt.field + ": " + tt.value + "\nservices:\n  api:\n    image: ghcr.io/acme/api:1.0.0\n")
+			input := []byte("name: trust-demo\nx-uds:\n  package:\n    caBundle:\n      " + tt.field + ": " + tt.value + "\nservices:\n  api:\n    image: ghcr.io/acme/api:1.0.0\n")
 
 			_, err := compose.LoadCanonicalYAML(input)
 			if err == nil {
@@ -2453,9 +2591,10 @@ func TestLoadCanonicalRejectsUnsupportedCABundleConfigMapField(t *testing.T) {
 
 	input := []byte(`name: trust-demo
 x-uds:
-  caBundle:
-    configMap:
-      target: custom-trust-bundle
+  package:
+    caBundle:
+      configMap:
+        target: custom-trust-bundle
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2467,7 +2606,7 @@ services:
 	if err == nil {
 		t.Fatalf("expected unsupported caBundle configMap field to fail")
 	}
-	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap.target") {
+	if !strings.Contains(err.Error(), "invalid x-uds.package.caBundle.configMap.target") {
 		t.Fatalf("expected unsupported caBundle configMap field error, got %v", err)
 	}
 }
@@ -2477,8 +2616,9 @@ func TestLoadCanonicalRejectsInvalidCABundleConfigMapType(t *testing.T) {
 
 	input := []byte(`name: trust-demo
 x-uds:
-  caBundle:
-    configMap: nope
+  package:
+    caBundle:
+      configMap: nope
 services:
   api:
     image: ghcr.io/acme/api:1.0.0
@@ -2488,7 +2628,7 @@ services:
 	if err == nil {
 		t.Fatalf("expected invalid caBundle configMap type to fail")
 	}
-	if !strings.Contains(err.Error(), "invalid x-uds.caBundle.configMap") {
+	if !strings.Contains(err.Error(), "invalid x-uds.package.caBundle.configMap") {
 		t.Fatalf("expected caBundle configMap validation error, got %v", err)
 	}
 }
