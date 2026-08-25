@@ -533,10 +533,10 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 	childIndent := indent + "    "
 	quantityIndent := childIndent + "    "
 	template := []string{
-			indent + "# {{ $allResources := .Values.resources | default (dict) }}",
-			indent + fmt.Sprintf("# {{ $serviceResources := (index $allResources %q) | default (dict) }}", serviceName),
-			indent + "# {{ $requests := (index $serviceResources \"requests\") | default (dict) }}",
-			indent + "# {{ $limits := (index $serviceResources \"limits\") | default (dict) }}",
+		indent + "# {{ $allResources := .Values.resources | default (dict) }}",
+		indent + fmt.Sprintf("# {{ $serviceResources := (index $allResources %q) | default (dict) }}", serviceName),
+		indent + "# {{ $requests := (index $serviceResources \"requests\") | default (dict) }}",
+		indent + "# {{ $limits := (index $serviceResources \"limits\") | default (dict) }}",
 		indent + "# {{ $cpuRequest := (index $requests \"cpu\") | default \"\" }}",
 		indent + "# {{ $memoryRequest := (index $requests \"memory\") | default \"\" }}",
 		indent + "# {{ $cpuLimit := (index $limits \"cpu\") | default \"\" }}",
