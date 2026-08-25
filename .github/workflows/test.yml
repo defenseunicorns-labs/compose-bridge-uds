@@ -25,3 +25,26 @@ jobs:
 
       - name: Run tests
         run: go test -race ./...
+
+  generated-package-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@d6add59d4c2ca789ed7c92741e91bd340b4e950b # v1.0.2
+        with:
+          # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
+          version: v0.35.1
+
+      - name: Generate full example package
+        run: go run . -in examples/full/compose.yaml -out "${RUNNER_TEMP}/generated-package"
+
+      - name: Lint generated package
+        run: uds zarf dev lint "${RUNNER_TEMP}/generated-package" --flavor upstream

@@ -1,6 +1,8 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,12 +216,132 @@ func WritePackage(root string, app model.App) error {
 	for _, svc := range app.Services {
 		images = append(images, buildComponentImages(svc, servicePorts)...)
 	}
+	images = dedupeStrings(images)
+	flavor := inferPackageFlavor(app, images)
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, dedupeStrings(images)); err != nil {
+	if err := writePackageDocumentation(root, app, secretVariables, environmentVariables, flavor); err != nil {
+		return err
+	}
+
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, environmentVariables, images, flavor); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string, flavor string) error {
+	docsDir := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		return fmt.Errorf("create documentation directory %s: %w", docsDir, err)
+	}
+
+	documents := map[string]string{
+		"README.md":        buildPackageReadme(app, flavor),
+		"configuration.md": buildConfigurationDocumentation(app, secretVariables, environmentVariables),
+		"dependencies.md":  buildDependencyDocumentation(app),
+	}
+	for name, content := range documents {
+		path := filepath.Join(docsDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write package documentation %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func buildPackageReadme(app model.App, flavor string) string {
+	return fmt.Sprintf(`# %s
+
+This UDS package was generated from Docker Compose. It deploys the %s application to the %s namespace.
+
+## Build
+
+Build the generated package with its inferred flavor:
+
+%s
+
+## Package documentation
+
+- [Configuration](configuration.md) describes the package's deploy-time settings.
+- [Dependencies](dependencies.md) lists the application services, images, and service dependencies.
+
+Regenerate this package after changing the source Compose project; generated files are not intended for manual editing.
+`, app.Package.Name, app.Package.Name, app.Package.Namespace, "```sh\nzarf package create . --flavor "+flavor+"\n```")
+}
+
+func buildConfigurationDocumentation(app model.App, secretVariables map[string]secretVariableNames, environmentVariables map[string]map[string]string) string {
+	var content strings.Builder
+	content.WriteString("# Configuration\n\n")
+	content.WriteString("Set these values when deploying the generated Zarf package.\n\n")
+	content.WriteString("| Variable | Description | Default | Sensitive |\n")
+	content.WriteString("|---|---|---|---|\n")
+	writeDocumentationVariable(&content, domainVariable, "Cluster domain used by generated application endpoints", defaultDomain, false)
+	writeDocumentationVariable(&content, additionalNetworkAllowVariable, "Additional UDS network allow rules supplied as a YAML array", "[]", false)
+
+	for _, secretName := range sortedSecretNames(app.Secrets) {
+		secret := app.Secrets[secretName]
+		variable := secretVariables[secretName]
+		if secret.External {
+			writeDocumentationVariable(&content, variable.SecretName, fmt.Sprintf("Kubernetes Secret name for external Compose secret %s", secretName), "", false)
+			writeDocumentationVariable(&content, variable.SecretKey, fmt.Sprintf("Key in the Kubernetes Secret for external Compose secret %s", secretName), secret.Name, false)
+			continue
+		}
+		writeDocumentationVariable(&content, variable.Value, fmt.Sprintf("Value for Compose secret %s", secretName), "", true)
+	}
+
+	for _, svc := range app.Services {
+		for _, item := range svc.Env {
+			writeDocumentationVariable(
+				&content,
+				environmentVariables[svc.Name][item.Name],
+				fmt.Sprintf("Value for %s environment variable on Compose service %s", item.Name, svc.Name),
+				item.Value,
+				false,
+			)
+		}
+	}
+
+	return content.String()
+}
+
+func writeDocumentationVariable(content *strings.Builder, name, description, defaultValue string, sensitive bool) {
+	defaultText := "—"
+	if defaultValue != "" {
+		defaultText = markdownTableValue(defaultValue)
+	}
+	fmt.Fprintf(content, "| `%s` | %s | %s | %t |\n", markdownTableValue(name), markdownTableValue(description), defaultText, sensitive)
+}
+
+func markdownTableValue(value string) string {
+	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.ReplaceAll(value, "\r\n", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
+}
+
+func buildDependencyDocumentation(app model.App) string {
+	var content strings.Builder
+	content.WriteString("# Dependencies\n\n")
+	content.WriteString("The generated package contains these application services and container images.\n\n")
+	content.WriteString("| Service | Image | Depends on |\n")
+	content.WriteString("|---|---|---|\n")
+	for _, svc := range app.Services {
+		dependencies := make([]string, 0, len(svc.DependsOn))
+		for _, dependency := range svc.DependsOn {
+			label := dependency.Service
+			if dependency.Condition != "" {
+				label += " (" + dependency.Condition + ")"
+			}
+			dependencies = append(dependencies, label)
+		}
+		dependencyText := "—"
+		if len(dependencies) > 0 {
+			dependencyText = strings.Join(dependencies, ", ")
+		}
+		fmt.Fprintf(&content, "| `%s` | `%s` | %s |\n", markdownTableValue(svc.Name), markdownTableValue(svc.Image), markdownTableValue(dependencyText))
+	}
+	return content.String()
 }
 
 // Compose build workspace and Zarf package-creation actions.
@@ -458,7 +580,7 @@ func writeChartMetadata(path string, app model.App) error {
 		Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 		Type:        "application",
 		Version:     app.Package.Version,
-		AppVersion:  app.Package.Version,
+		AppVersion:  app.Package.UpstreamVersion,
 	})
 }
 
@@ -550,6 +672,7 @@ func writeZarfConfig(
 	secretVariables map[string]secretVariableNames,
 	environmentVariables map[string]map[string]string,
 	images []string,
+	flavor string,
 ) error {
 	variables := []zarfVariable{
 		{
@@ -605,8 +728,14 @@ func writeZarfConfig(
 			Name:        app.Package.Name,
 			Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 			Version:     app.Package.Version,
+			Annotations: buildPackageMetadataAnnotations(app),
 		},
 		Variables: variables,
+		Documentation: map[string]string{
+			"readme":        "docs/README.md",
+			"configuration": "docs/configuration.md",
+			"dependencies":  "docs/dependencies.md",
+		},
 	}
 
 	chart := zarfChart{
@@ -622,6 +751,7 @@ func writeZarfConfig(
 		Name:        app.Package.Name,
 		Required:    true,
 		Description: fmt.Sprintf("Deploy %s", app.Package.Name),
+		Only:        &zarfComponentOnly{Flavor: flavor},
 		Charts:      []zarfChart{chart},
 		Images:      dedupeStrings(images),
 		Actions:     buildCreateActions(app),
@@ -646,6 +776,55 @@ func writeZarfConfig(
 		return fmt.Errorf("write zarf config: %w", err)
 	}
 	return nil
+}
+
+func buildPackageMetadataAnnotations(app model.App) map[string]string {
+	title := titleCase(app.Package.Name)
+	return map[string]string{
+		"dev.uds.title":   title,
+		"dev.uds.tagline": fmt.Sprintf("%s automatically generated by Docker Compose Bridge UDS.", title),
+		"dev.uds.icon":    "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(generatedPackageIcon(app.Package.Name))),
+	}
+}
+
+func generatedPackageIcon(packageName string) string {
+	digest := sha256.Sum256([]byte(packageName))
+	hue := (int(digest[0])<<8 | int(digest[1])) % 360
+	background := fmt.Sprintf("hsl(%d, 45%%, 18%%)", hue)
+	top := fmt.Sprintf("hsl(%d, 75%%, 72%%)", hue)
+	left := fmt.Sprintf("hsl(%d, 70%%, 52%%)", hue)
+	right := fmt.Sprintf("hsl(%d, 75%%, 38%%)", hue)
+
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" rx="32" fill="%s"/><path d="M45 62l55-30 55 30-55 30z" fill="%s"/><path d="M45 72l50 27v58l-50-28z" fill="%s"/><path d="M155 72l-50 27v58l50-28z" fill="%s"/></svg>`, background, top, left, right)
+}
+
+func inferPackageFlavor(app model.App, images []string) string {
+	if len(images) == 0 {
+		return "upstream"
+	}
+	for _, svc := range app.Services {
+		if svc.Build != nil {
+			return "upstream"
+		}
+	}
+	for _, image := range images {
+		if imageRegistry(image) != "registry1.dso.mil" {
+			return "upstream"
+		}
+	}
+	return "registry1"
+}
+
+func imageRegistry(image string) string {
+	parts := strings.SplitN(strings.TrimSpace(image), "/", 2)
+	if len(parts) < 2 {
+		return "docker.io"
+	}
+	registry := strings.ToLower(parts[0])
+	if !strings.ContainsAny(registry, ".:") && registry != "localhost" {
+		return "docker.io"
+	}
+	return registry
 }
 
 func buildDeployment(
@@ -931,6 +1110,9 @@ func buildSSO(app model.App) []any {
 }
 
 func buildMonitor(app model.App) ([]any, error) {
+	if !app.Package.MonitorConfigured {
+		return buildInferredMonitors(app), nil
+	}
 	if len(app.Package.Monitor) == 0 {
 		return nil, nil
 	}
@@ -976,6 +1158,78 @@ func buildMonitor(app model.App) ([]any, error) {
 	}
 
 	return enriched, nil
+}
+
+var wellKnownMetricsPorts = map[int]struct{}{
+	9090: {}, // Prometheus
+	9100: {}, // Prometheus Node Exporter
+	9115: {}, // Prometheus Blackbox Exporter
+	9121: {}, // Prometheus Redis Exporter
+	9153: {}, // CoreDNS metrics
+	9187: {}, // Prometheus PostgreSQL Exporter
+	9256: {}, // Prometheus Process Exporter
+}
+
+func buildInferredMonitors(app model.App) []any {
+	var monitors []any
+	for _, svc := range app.Services {
+		metricsPorts := inferredMetricsPorts(svc)
+		for _, port := range metricsPorts {
+			selector := serviceSelector(svc.Name)
+			monitors = append(monitors, map[string]any{
+				"description": fmt.Sprintf("Metrics for Compose service %s on port %d", svc.Name, port.Number),
+				"selector":    selector,
+				"podSelector": selector,
+				"portName":    buildPortName(port),
+				"targetPort":  port.Number,
+				"path":        "/metrics",
+				"kind":        "ServiceMonitor",
+			})
+		}
+	}
+	return monitors
+}
+
+func inferredMetricsPorts(svc model.Service) []model.Port {
+	environmentPorts := metricsEnvironmentPorts(svc.Env)
+	ports := make([]model.Port, 0, len(svc.Ports))
+	for _, port := range svc.Ports {
+		if !strings.EqualFold(port.Protocol, "TCP") {
+			continue
+		}
+		_, wellKnown := wellKnownMetricsPorts[port.Number]
+		_, configuredByEnvironment := environmentPorts[port.Number]
+		if isMetricsPortName(port.Name) || wellKnown || configuredByEnvironment {
+			ports = append(ports, port)
+		}
+	}
+	return ports
+}
+
+func isMetricsPortName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	for _, token := range strings.Split(normalized, "-") {
+		if token == "metrics" || token == "prometheus" {
+			return true
+		}
+	}
+	return false
+}
+
+func metricsEnvironmentPorts(environment []model.EnvVar) map[int]struct{} {
+	ports := map[int]struct{}{}
+	for _, item := range environment {
+		name := strings.ToUpper(strings.TrimSpace(item.Name))
+		if name != "METRICS_PORT" && name != "PROMETHEUS_PORT" {
+			continue
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(item.Value))
+		if err == nil && port > 0 && port <= 65535 {
+			ports[port] = struct{}{}
+		}
+	}
+	return ports
 }
 
 func enrichMonitorPortFields(entry map[string]any, svc model.Service) error {
@@ -1139,8 +1393,8 @@ func buildInferredSSO(app model.App) []any {
 	}
 	return []any{
 		map[string]any{
-			"clientId": app.Package.Name,
-			"name":     titleCase(app.Package.Name),
+			"clientId": inferredSSOClientID(app.Package),
+			"name":     inferredSSOName(app.Package),
 			"redirectUris": []any{
 				inferredRedirectURI(host),
 			},
@@ -1162,8 +1416,8 @@ func enrichSSOEntries(app model.App) []any {
 			enriched = append(enriched, raw)
 			continue
 		}
-		setDefault(item, "clientId", app.Package.Name)
-		setDefault(item, "name", titleCase(app.Package.Name))
+		setDefault(item, "clientId", inferredSSOClientID(app.Package))
+		setDefault(item, "name", inferredSSOName(app.Package))
 		if host != "" {
 			setDefault(item, "redirectUris", []any{
 				inferredRedirectURI(host),
@@ -1177,6 +1431,18 @@ func enrichSSOEntries(app model.App) []any {
 		enriched = append(enriched, item)
 	}
 	return enriched
+}
+
+func inferredSSOClientID(pkg model.Package) string {
+	group := pkg.Group
+	if group == "" {
+		group = "compose"
+	}
+	return fmt.Sprintf("uds-%s-%s", group, pkg.Name)
+}
+
+func inferredSSOName(pkg model.Package) string {
+	return titleCase(pkg.Name) + " Login"
 }
 
 func inferredRedirectURI(host string) string {
@@ -2105,17 +2371,19 @@ type udsServiceMesh struct {
 }
 
 type zarfPackageConfig struct {
-	APIVersion string          `yaml:"apiVersion,omitempty"`
-	Kind       string          `yaml:"kind"`
-	Metadata   zarfMetadata    `yaml:"metadata"`
-	Variables  []zarfVariable  `yaml:"variables,omitempty"`
-	Components []zarfComponent `yaml:"components"`
+	APIVersion    string            `yaml:"apiVersion,omitempty"`
+	Kind          string            `yaml:"kind"`
+	Metadata      zarfMetadata      `yaml:"metadata"`
+	Variables     []zarfVariable    `yaml:"variables,omitempty"`
+	Components    []zarfComponent   `yaml:"components"`
+	Documentation map[string]string `yaml:"documentation,omitempty"`
 }
 
 type zarfMetadata struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Version     string `yaml:"version"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description,omitempty"`
+	Version     string            `yaml:"version"`
+	Annotations map[string]string `yaml:"annotations,omitempty"`
 }
 
 type zarfVariable struct {
@@ -2131,10 +2399,15 @@ type zarfComponent struct {
 	Name          string                `yaml:"name"`
 	Required      bool                  `yaml:"required"`
 	Description   string                `yaml:"description,omitempty"`
+	Only          *zarfComponentOnly    `yaml:"only,omitempty"`
 	Charts        []zarfChart           `yaml:"charts,omitempty"`
 	Images        []string              `yaml:"images,omitempty"`
 	ImageArchives []zarfImageArchive    `yaml:"imageArchives,omitempty"`
 	Actions       *zarfComponentActions `yaml:"actions,omitempty"`
+}
+
+type zarfComponentOnly struct {
+	Flavor string `yaml:"flavor"`
 }
 
 type zarfImageArchive struct {

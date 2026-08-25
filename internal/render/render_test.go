@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -34,7 +35,7 @@ services:
 	if len(app.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(app.Services))
 	}
-	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0" {
+	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0-uds.0" {
 		t.Fatalf("expected build image reference to be internalized, got %q", app.Services[0].Image)
 	}
 	if app.Services[0].Build == nil {
@@ -153,8 +154,141 @@ services:
 	if err != nil {
 		t.Fatalf("expected build without image to be supported, got %v", err)
 	}
-	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0" {
+	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0-uds.0" {
 		t.Fatalf("expected generated internal image, got %q", got)
+	}
+}
+
+func TestLoadCanonicalGeneratesUDSPackageVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		input           string
+		upstreamVersion string
+		packageVersion  string
+	}{
+		{
+			name: "published service is primary",
+			input: `name: demo
+services:
+  database:
+    image: postgres:17
+  web:
+    image: ghcr.io/acme/web:v2.4.1
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`,
+			upstreamVersion: "2.4.1",
+			packageVersion:  "2.4.1-uds.0",
+		},
+		{
+			name: "short prerelease image tag",
+			input: `name: demo
+services:
+  cache:
+    image: redis:7-alpine
+`,
+			upstreamVersion: "7.0.0-alpine",
+			packageVersion:  "7.0.0-alpine-uds.0",
+		},
+		{
+			name: "latest tag falls back",
+			input: `name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "0.1.0",
+			packageVersion:  "0.1.0-uds.0",
+		},
+		{
+			name: "local build falls back",
+			input: `name: demo
+services:
+  api:
+    build:
+      context: .
+`,
+			upstreamVersion: "0.1.0",
+			packageVersion:  "0.1.0-uds.0",
+		},
+		{
+			name: "explicit UDS version is preserved",
+			input: `name: demo
+x-uds:
+  package:
+    version: 5.6.7-uds.3
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "5.6.7",
+			packageVersion:  "5.6.7-uds.3",
+		},
+		{
+			name: "explicit upstream version receives UDS suffix",
+			input: `name: demo
+x-uds:
+  package:
+    version: "5.6"
+services:
+  api:
+    image: ghcr.io/acme/api:latest
+`,
+			upstreamVersion: "5.6.0",
+			packageVersion:  "5.6.0-uds.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			if got := app.Package.UpstreamVersion; got != tt.upstreamVersion {
+				t.Fatalf("UpstreamVersion = %q, want %q", got, tt.upstreamVersion)
+			}
+			if got := app.Package.Version; got != tt.packageVersion {
+				t.Fatalf("Version = %q, want %q", got, tt.packageVersion)
+			}
+		})
+	}
+}
+
+func TestLoadCanonicalRejectsInvalidPackageVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		wantErr string
+	}{
+		{name: "non-version string", version: "latest", wantErr: `invalid x-uds.package.version: "latest" must begin with a numeric semantic version`},
+		{name: "non-string YAML value", version: "5.6", wantErr: "invalid x-uds.package.version: must be a non-empty string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte(`name: demo
+x-uds:
+  package:
+    version: ` + tt.version + `
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadCanonicalYAML() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -203,7 +337,7 @@ x-uds:
 	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
 	services := mustMap(t, buildCompose["services"])
 	api := mustMap(t, services["api"])
-	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3" {
+	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3-uds.0" {
 		t.Fatalf("expected internal API image, got %#v", got)
 	}
 	apiBuild := mustMap(t, api["build"])
@@ -225,9 +359,9 @@ x-uds:
 	for _, want := range []string{
 		"imageArchives:",
 		"path: image-archives/api.tar",
-		"zarf.internal/demo-api:1.2.3",
+		"zarf.internal/demo-api:1.2.3-uds.0",
 		"path: image-archives/base-image.tar",
-		"zarf.internal/demo-base-image:1.2.3",
+		"zarf.internal/demo-base-image:1.2.3-uds.0",
 		"redis:7.4-alpine",
 		"docker buildx bake",
 		"fs.read=/workspace",
@@ -329,7 +463,7 @@ services:
 		t.Fatalf("expected server image archive path, got %#v", archive["path"])
 	}
 	archiveImages, ok := archive["images"].([]any)
-	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:0.1.0" {
+	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:7.0.0-alpine-uds.0" {
 		t.Fatalf("expected only the built image under imageArchives, got %#v", archive["images"])
 	}
 
@@ -1700,8 +1834,8 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: myapp",
-		"name: Myapp",
+		"clientId: uds-compose-myapp",
+		"name: Myapp Login",
 		"https://web.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
@@ -1788,11 +1922,50 @@ services:
 	if !strings.Contains(udsPackage, "clientId: custom-id") {
 		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "name: Myapp") {
+	if !strings.Contains(udsPackage, "name: Myapp Login") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
 	if !strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
+	}
+}
+
+func TestSSOAutoGenerationUsesConfiguredPackageGroup(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: mattermost
+x-uds:
+  package:
+    group: software_factory
+services:
+  web:
+    image: mattermost/mattermost-team-edition:10.11.2
+    ports:
+      - target: 8065
+        published: "8065"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if got := app.Package.Group; got != "software-factory" {
+		t.Fatalf("Package.Group = %q, want software-factory", got)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	for _, want := range []string{
+		"clientId: uds-software-factory-mattermost",
+		"name: Mattermost Login",
+	} {
+		if !strings.Contains(udsPackage, want) {
+			t.Fatalf("expected UDS SSO configuration to contain %q\n%s", want, udsPackage)
+		}
 	}
 }
 
@@ -1915,6 +2088,131 @@ services:
 	}
 	if strings.Contains(udsPackage, "service: api") {
 		t.Fatalf("did not expect bridge-only service field in rendered monitor\n%s", udsPackage)
+	}
+}
+
+func TestMonitorInferenceFromCommonComposePatterns(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+services:
+  named:
+    image: ghcr.io/acme/named:1.0.0
+    ports:
+      - name: http
+        target: 8080
+        published: "8080"
+        protocol: tcp
+      - name: app-metrics
+        target: 9400
+        published: "9400"
+        protocol: tcp
+  well-known:
+    image: ghcr.io/acme/exporter:1.0.0
+    expose:
+      - "9100"
+  environment:
+    image: ghcr.io/acme/environment:1.0.0
+    environment:
+      PROMETHEUS_PORT: "9191"
+    expose:
+      - "9191"
+  ordinary:
+    image: ghcr.io/acme/ordinary:1.0.0
+    expose:
+      - "8080"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	monitors, ok := spec["monitor"].([]any)
+	if !ok || len(monitors) != 3 {
+		t.Fatalf("expected 3 inferred monitors, got %#v", spec["monitor"])
+	}
+	wantPorts := map[int]string{
+		9400: "app-metrics",
+		9100: "port-9100-tcp",
+		9191: "port-9191-tcp",
+	}
+	for i := range monitors {
+		monitor := mustMap(t, monitors[i])
+		target, ok := monitor["targetPort"].(int)
+		if !ok {
+			t.Fatalf("monitor[%d].targetPort = %#v, want int", i, monitor["targetPort"])
+		}
+		wantName, ok := wantPorts[target]
+		if !ok {
+			t.Fatalf("monitor[%d].targetPort = %d, want one of %#v", i, target, wantPorts)
+		}
+		if got := monitor["portName"]; got != wantName {
+			t.Fatalf("monitor[%d].portName = %#v, want %q", i, got, wantName)
+		}
+		if got := monitor["path"]; got != "/metrics" {
+			t.Fatalf("monitor[%d].path = %#v, want /metrics", i, got)
+		}
+		if got := monitor["kind"]; got != "ServiceMonitor" {
+			t.Fatalf("monitor[%d].kind = %#v, want ServiceMonitor", i, got)
+		}
+	}
+}
+
+func TestExplicitMonitorConfigurationDisablesInference(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor: []
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - name: metrics
+        target: 9090
+        published: "9090"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if !app.Package.MonitorConfigured {
+		t.Fatal("expected explicit x-uds.monitor to be tracked")
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	if strings.Contains(udsPackage, "monitor:") {
+		t.Fatalf("did not expect inferred monitors when x-uds.monitor is explicitly empty\n%s", udsPackage)
+	}
+}
+
+func TestInvalidMonitorConfigurationIsRejected(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: metrics-demo
+x-uds:
+  monitor: disabled
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	_, err := compose.LoadCanonicalYAML(input)
+	if err == nil || !strings.Contains(err.Error(), "invalid x-uds.monitor: must be an array") {
+		t.Fatalf("LoadCanonicalYAML() error = %v, want invalid monitor array error", err)
 	}
 }
 
@@ -2559,7 +2857,8 @@ services:
 	for _, want := range []string{
 		"apiVersion: v2",
 		"name: shop",
-		"version: 0.1.0",
+		"version: 1.0.0-uds.0",
+		"appVersion: 1.0.0",
 	} {
 		if !strings.Contains(chartMeta, want) {
 			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
@@ -2581,7 +2880,7 @@ services:
 		"charts:",
 		"localPath: chart",
 		"name: shop",
-		"version: 0.1.0",
+		"version: 1.0.0-uds.0",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
@@ -2599,6 +2898,212 @@ services:
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
 		}
+	}
+}
+
+func TestWritePackageGeneratesPackageDocumentation(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    environment:
+      LOG_LEVEL: info
+    secrets:
+      - api_key
+    depends_on:
+      database:
+        condition: service_healthy
+  database:
+    image: postgres:17
+secrets:
+  api_key:
+    file: ./api_key.txt
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	documentation := mustMap(t, zarfConfig["documentation"])
+	wantDocumentation := map[string]string{
+		"readme":        "docs/README.md",
+		"configuration": "docs/configuration.md",
+		"dependencies":  "docs/dependencies.md",
+	}
+	for key, want := range wantDocumentation {
+		if got := documentation[key]; got != want {
+			t.Fatalf("documentation[%q] = %#v, want %q", key, got, want)
+		}
+	}
+
+	readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
+	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace", "zarf package create . --flavor upstream", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
+		if !strings.Contains(readme, want) {
+			t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
+		}
+	}
+
+	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
+	for _, want := range []string{
+		"| `DOMAIN` | Cluster domain used by generated application endpoints | uds.dev | false |",
+		"| `ADDITIONAL_NETWORK_ALLOW` | Additional UDS network allow rules supplied as a YAML array | [] | false |",
+		"| `API_KEY` | Value for Compose secret api-key | — | true |",
+		"| `API_LOG_LEVEL` | Value for LOG_LEVEL environment variable on Compose service api | info | false |",
+	} {
+		if !strings.Contains(configuration, want) {
+			t.Fatalf("expected generated configuration documentation to contain %q\n%s", want, configuration)
+		}
+	}
+
+	dependencies := readFile(t, filepath.Join(outDir, "docs", "dependencies.md"))
+	for _, want := range []string{
+		"| `api` | `ghcr.io/acme/api:1.0.0` | database (service_healthy) |",
+		"| `database` | `postgres:17` | — |",
+	} {
+		if !strings.Contains(dependencies, want) {
+			t.Fatalf("expected generated dependency documentation to contain %q\n%s", want, dependencies)
+		}
+	}
+}
+
+func TestWritePackageInfersSinglePackageFlavor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		flavor string
+	}{
+		{
+			name: "all Iron Bank images",
+			input: `name: hardened
+services:
+  api:
+    image: registry1.dso.mil/ironbank/opensource/acme/api:1.0.0
+  database:
+    image: registry1.dso.mil/ironbank/opensource/postgres/postgresql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`,
+			flavor: "registry1",
+		},
+		{
+			name: "mixed image registries",
+			input: `name: mixed
+services:
+  api:
+    image: registry1.dso.mil/ironbank/opensource/acme/api:1.0.0
+  database:
+    image: postgres:17
+`,
+			flavor: "upstream",
+		},
+		{
+			name: "local build",
+			input: `name: local
+services:
+  api:
+    build:
+      context: .
+`,
+			flavor: "upstream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+			components, ok := zarfConfig["components"].([]any)
+			if !ok || len(components) != 1 {
+				t.Fatalf("expected one Zarf component, got %#v", zarfConfig["components"])
+			}
+			component := mustMap(t, components[0])
+			only := mustMap(t, component["only"])
+			if got := only["flavor"]; got != tt.flavor {
+				t.Fatalf("only.flavor = %#v, want %q", got, tt.flavor)
+			}
+
+			readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
+			if want := "zarf package create . --flavor " + tt.flavor; !strings.Contains(readme, want) {
+				t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
+			}
+		})
+	}
+}
+
+func TestWritePackageGeneratesUDSRegistryMetadata(t *testing.T) {
+	t.Parallel()
+
+	renderAnnotations := func(packageName string) map[string]any {
+		t.Helper()
+		input := []byte(fmt.Sprintf(`name: %s
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`, packageName))
+
+		app, err := compose.LoadCanonicalYAML(input)
+		if err != nil {
+			t.Fatalf("LoadCanonicalYAML() error = %v", err)
+		}
+		outDir := t.TempDir()
+		if err := render.WritePackage(outDir, app); err != nil {
+			t.Fatalf("WritePackage() error = %v", err)
+		}
+
+		zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+		metadata := mustMap(t, zarfConfig["metadata"])
+		return mustMap(t, metadata["annotations"])
+	}
+
+	annotations := renderAnnotations("hello-world")
+	want := map[string]string{
+		"dev.uds.title":   "Hello World",
+		"dev.uds.tagline": "Hello World automatically generated by Docker Compose Bridge UDS.",
+	}
+	for key, value := range want {
+		if got := annotations[key]; got != value {
+			t.Fatalf("metadata.annotations[%q] = %#v, want %q", key, got, value)
+		}
+	}
+	if len(annotations) != 3 {
+		t.Fatalf("metadata.annotations = %#v, want title, tagline, and icon only", annotations)
+	}
+
+	icon, ok := annotations["dev.uds.icon"].(string)
+	if !ok || !strings.HasPrefix(icon, "data:image/svg+xml;base64,") {
+		t.Fatalf("expected SVG data URI icon, got %#v", annotations["dev.uds.icon"])
+	}
+	encoded := strings.TrimPrefix(icon, "data:image/svg+xml;base64,")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode generated metadata icon: %v", err)
+	}
+	if !strings.Contains(string(decoded), `<svg xmlns="http://www.w3.org/2000/svg"`) || !strings.Contains(string(decoded), "hsl(") {
+		t.Fatalf("expected decoded metadata icon to be a colorized SVG, got %q", decoded)
+	}
+
+	if got := renderAnnotations("hello-world")["dev.uds.icon"]; got != icon {
+		t.Fatalf("same package name generated different icons: %#v and %#v", icon, got)
+	}
+	if got := renderAnnotations("another-package")["dev.uds.icon"]; got == icon {
+		t.Fatalf("different package names generated the same icon: %#v", icon)
 	}
 }
 

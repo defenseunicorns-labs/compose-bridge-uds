@@ -26,7 +26,7 @@ cd examples/simple
 docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
 
 # 3. Build and deploy the package
-zarf package create out/
+zarf package create out/ --flavor upstream
 zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 

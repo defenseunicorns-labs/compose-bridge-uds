@@ -30,7 +30,7 @@ services:
       test: ["CMD", "python", "/app/server.py", "--healthcheck"]
 
   db:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     expose:
       - "6379"
     volumes:

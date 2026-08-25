@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	DefaultVersion      = "0.1.0"
-	DependencyInitImage = "busybox:1.36"
+	DefaultUpstreamVersion = "0.1.0"
+	DefaultVersion         = DefaultUpstreamVersion + "-uds.0"
+	DependencyInitImage    = "docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 )
 
 type Port struct {
@@ -94,15 +95,19 @@ type Dependency struct {
 }
 
 type Package struct {
-	Name            string
-	Namespace       string
-	Version         string
-	NetworkExpose   []any
-	Monitor         []any
-	AdditionalAllow []any
-	SSOConfigured   bool
-	SSO             []any
-	CABundle        map[string]any
+	Name              string
+	Namespace         string
+	Group             string
+	UpstreamVersion   string
+	Version           string
+	VersionConfigured bool
+	NetworkExpose     []any
+	MonitorConfigured bool
+	Monitor           []any
+	AdditionalAllow   []any
+	SSOConfigured     bool
+	SSO               []any
+	CABundle          map[string]any
 }
 
 type BuildDefinition struct {
