@@ -8,7 +8,7 @@ The generated Zarf component uses one inferred package flavor. It is `registry1`
 
 Generated package versions follow `<upstream-app-version>-uds.<uds-sub-version>`. The bridge infers the upstream version from the first service with a published port, or the first service when none are published. Tags that cannot be normalized to a semantic version, `latest`, digest-only images, and local builds fall back to `0.1.0-uds.0`.
 
-For UDS Registry publishing, generated Zarf metadata includes the standard `dev.uds.title`, `dev.uds.categories`, `dev.uds.keywords`, and `dev.uds.tagline` annotations. These values are derived deterministically from the package and service names.
+For UDS Registry publishing, generated Zarf metadata includes the standard `dev.uds.title`, `dev.uds.tagline`, and `dev.uds.icon` annotations. The title and tagline are derived from the generated package name. The SVG icon uses a deterministic color derived from a hash of that name, giving each generated package a stable visual variation.
 
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
