@@ -8,7 +8,7 @@ import (
 const (
 	DefaultUpstreamVersion = "0.1.0"
 	DefaultVersion         = DefaultUpstreamVersion + "-uds.0"
-	DependencyInitImage    = "busybox:1.36"
+	DependencyInitImage    = "docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 )
 
 type Port struct {
