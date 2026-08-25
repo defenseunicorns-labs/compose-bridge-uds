@@ -46,6 +46,7 @@ const (
 	defaultDomain                     = "uds.dev"
 	helmDomainValue                   = "{{ .Values.uds.domain }}"
 	zarfDomainPlaceholder             = "__ZARF_DOMAIN__"
+	resourceValuePlaceholder          = "__HELM_RESOURCE_VALUE__"
 )
 
 func WritePackage(root string, app model.App) error {
@@ -169,7 +170,7 @@ func WritePackage(root string, app model.App) error {
 		if err != nil {
 			return err
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment); err != nil {
+		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name); err != nil {
 			return err
 		}
 		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc)); err != nil {
@@ -291,6 +292,11 @@ func buildConfigurationDocumentation(app model.App, secretVariables map[string]s
 	}
 
 	for _, svc := range app.Services {
+		resourceVariables := buildResourceVariableNames(svc.Name)
+		writeDocumentationVariable(&content, resourceVariables.CPURequest, fmt.Sprintf("CPU request for Compose service %s", svc.Name), svc.Resources.Requests.CPU, false)
+		writeDocumentationVariable(&content, resourceVariables.MemoryRequest, fmt.Sprintf("Memory request for Compose service %s", svc.Name), svc.Resources.Requests.Memory, false)
+		writeDocumentationVariable(&content, resourceVariables.CPULimit, fmt.Sprintf("CPU limit for Compose service %s", svc.Name), svc.Resources.Limits.CPU, false)
+		writeDocumentationVariable(&content, resourceVariables.MemoryLimit, fmt.Sprintf("Memory limit for Compose service %s", svc.Name), svc.Resources.Limits.Memory, false)
 		for _, item := range svc.Env {
 			writeDocumentationVariable(
 				&content,
@@ -481,6 +487,89 @@ func sortedStringSet(values map[string]struct{}) []string {
 	return result
 }
 
+// writeDeploymentTemplate replaces the generated resource sentinel with a Helm
+// block that emits only resource quantities supplied for this service.
+func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceName string) error {
+	marshaled, err := yamlv3.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+
+	lines := strings.Split(string(marshaled), "\n")
+	start, end := -1, -1
+	baseIndent := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "resources:" {
+			continue
+		}
+		limit := i + 7
+		if limit > len(lines) {
+			limit = len(lines)
+		}
+		if !strings.Contains(strings.Join(lines[i:limit], "\n"), resourceValuePlaceholder) {
+			continue
+		}
+		start = i
+		baseIndent = len(line) - len(strings.TrimLeft(line, " "))
+		end = len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			if trimmed == "" {
+				continue
+			}
+			indent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
+			if indent <= baseIndent {
+				end = j
+				break
+			}
+		}
+		break
+	}
+	if start < 0 {
+		return fmt.Errorf("render resource template in %s: placeholder not found", path)
+	}
+
+	indent := strings.Repeat(" ", baseIndent)
+	childIndent := indent + "    "
+	quantityIndent := childIndent + "    "
+	template := []string{
+		indent + "# {{ $allResources := .Values.resources | default (dict) }}",
+		indent + fmt.Sprintf("# {{ $serviceResources := (index $allResources %q) | default (dict) }}", serviceName),
+		indent + "# {{ $requests := (index $serviceResources \"requests\") | default (dict) }}",
+		indent + "# {{ $limits := (index $serviceResources \"limits\") | default (dict) }}",
+		indent + "# {{ $cpuRequest := (index $requests \"cpu\") | default \"\" }}",
+		indent + "# {{ $memoryRequest := (index $requests \"memory\") | default \"\" }}",
+		indent + "# {{ $cpuLimit := (index $limits \"cpu\") | default \"\" }}",
+		indent + "# {{ $memoryLimit := (index $limits \"memory\") | default \"\" }}",
+		indent + "# {{ if or $cpuRequest $memoryRequest $cpuLimit $memoryLimit }}",
+		indent + "resources:",
+		childIndent + "# {{ if or $cpuRequest $memoryRequest }}",
+		childIndent + "requests:",
+		quantityIndent + "# {{ with $cpuRequest }}",
+		quantityIndent + "cpu: \"{{ . }}\"",
+		quantityIndent + "# {{ end }}",
+		quantityIndent + "# {{ with $memoryRequest }}",
+		quantityIndent + "memory: \"{{ . }}\"",
+		quantityIndent + "# {{ end }}",
+		childIndent + "# {{ end }}",
+		childIndent + "# {{ if or $cpuLimit $memoryLimit }}",
+		childIndent + "limits:",
+		quantityIndent + "# {{ with $cpuLimit }}",
+		quantityIndent + "cpu: \"{{ . }}\"",
+		quantityIndent + "# {{ end }}",
+		quantityIndent + "# {{ with $memoryLimit }}",
+		quantityIndent + "memory: \"{{ . }}\"",
+		quantityIndent + "# {{ end }}",
+		childIndent + "# {{ end }}",
+		indent + "# {{ end }}",
+	}
+	lines = append(lines[:start], append(template, lines[end:]...)...)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
+	}
+	return nil
+}
+
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
 // chart values (.Values.secrets.<variableName>) rather than a static literal, so
 // Zarf can inject the sensitive value via the chart values file at deploy time.
@@ -596,6 +685,7 @@ func writeChartValues(
 	values := chartValues{
 		AdditionalNetworkAllow: []any{},
 		Environment:            map[string]map[string]string{},
+		Resources:              map[string]resourceValues{},
 		Secrets:                map[string]string{},
 		ExternalSecrets:        map[string]externalSecretValues{},
 		UDS:                    udsValues{Domain: defaultDomain},
@@ -606,18 +696,30 @@ func writeChartValues(
 	}
 
 	for _, svc := range app.Services {
-		if len(svc.Env) == 0 {
-			continue
+		resourceVariables := buildResourceVariableNames(svc.Name)
+		resourceValues := resourceValues{
+			Requests: resourceQuantityValues{CPU: svc.Resources.Requests.CPU, Memory: svc.Resources.Requests.Memory},
+			Limits:   resourceQuantityValues{CPU: svc.Resources.Limits.CPU, Memory: svc.Resources.Limits.Memory},
 		}
-		serviceValues := make(map[string]string, len(svc.Env))
-		for _, item := range svc.Env {
-			value := item.Value
-			if placeholder {
-				value = fmt.Sprintf("###ZARF_VAR_%s###", environmentVariables[svc.Name][item.Name])
+		if placeholder {
+			resourceValues.Requests.CPU = fmt.Sprintf("###ZARF_VAR_%s###", resourceVariables.CPURequest)
+			resourceValues.Requests.Memory = fmt.Sprintf("###ZARF_VAR_%s###", resourceVariables.MemoryRequest)
+			resourceValues.Limits.CPU = fmt.Sprintf("###ZARF_VAR_%s###", resourceVariables.CPULimit)
+			resourceValues.Limits.Memory = fmt.Sprintf("###ZARF_VAR_%s###", resourceVariables.MemoryLimit)
+		}
+		values.Resources[svc.Name] = resourceValues
+
+		if len(svc.Env) > 0 {
+			serviceValues := make(map[string]string, len(svc.Env))
+			for _, item := range svc.Env {
+				value := item.Value
+				if placeholder {
+					value = fmt.Sprintf("###ZARF_VAR_%s###", environmentVariables[svc.Name][item.Name])
+				}
+				serviceValues[item.Name] = value
 			}
-			serviceValues[item.Name] = value
+			values.Environment[svc.Name] = serviceValues
 		}
-		values.Environment[svc.Name] = serviceValues
 	}
 
 	for _, name := range sortedSecretNames(app.Secrets) {
@@ -712,6 +814,13 @@ func writeZarfConfig(
 		})
 	}
 	for _, svc := range app.Services {
+		resourceVariables := buildResourceVariableNames(svc.Name)
+		variables = append(variables,
+			zarfVariable{Name: resourceVariables.CPURequest, Description: fmt.Sprintf("CPU request for compose service %s", svc.Name), Default: stringPointer(svc.Resources.Requests.CPU)},
+			zarfVariable{Name: resourceVariables.MemoryRequest, Description: fmt.Sprintf("Memory request for compose service %s", svc.Name), Default: stringPointer(svc.Resources.Requests.Memory)},
+			zarfVariable{Name: resourceVariables.CPULimit, Description: fmt.Sprintf("CPU limit for compose service %s", svc.Name), Default: stringPointer(svc.Resources.Limits.CPU)},
+			zarfVariable{Name: resourceVariables.MemoryLimit, Description: fmt.Sprintf("Memory limit for compose service %s", svc.Name), Default: stringPointer(svc.Resources.Limits.Memory)},
+		)
 		for _, item := range svc.Env {
 			variables = append(variables, zarfVariable{
 				Name:        environmentVariables[svc.Name][item.Name],
@@ -838,7 +947,10 @@ func buildDeployment(
 ) (deploymentManifest, error) {
 	ports := svc.Ports
 	volumes, volumeMounts := buildVolumes(svc, secrets, secretVariables)
-	resources := buildResources(svc.Resources)
+	resources := &resourceRequirements{
+		Limits:   map[string]string{"cpu": resourceValuePlaceholder, "memory": resourceValuePlaceholder},
+		Requests: map[string]string{"cpu": resourceValuePlaceholder, "memory": resourceValuePlaceholder},
+	}
 	securityContext := buildSecurityContext(svc)
 	initContainers := buildDependencyInitContainers(svc, servicePorts)
 
@@ -1645,32 +1757,6 @@ func buildServicePorts(ports []model.Port) []servicePort {
 	return out
 }
 
-func buildResources(spec model.Resources) *resourceRequirements {
-	resources := &resourceRequirements{}
-	if strings.TrimSpace(spec.Limits.CPU) != "" || strings.TrimSpace(spec.Limits.Memory) != "" {
-		resources.Limits = map[string]string{}
-		if strings.TrimSpace(spec.Limits.CPU) != "" {
-			resources.Limits["cpu"] = spec.Limits.CPU
-		}
-		if strings.TrimSpace(spec.Limits.Memory) != "" {
-			resources.Limits["memory"] = spec.Limits.Memory
-		}
-	}
-	if strings.TrimSpace(spec.Requests.CPU) != "" || strings.TrimSpace(spec.Requests.Memory) != "" {
-		resources.Requests = map[string]string{}
-		if strings.TrimSpace(spec.Requests.CPU) != "" {
-			resources.Requests["cpu"] = spec.Requests.CPU
-		}
-		if strings.TrimSpace(spec.Requests.Memory) != "" {
-			resources.Requests["memory"] = spec.Requests.Memory
-		}
-	}
-	if len(resources.Limits) == 0 && len(resources.Requests) == 0 {
-		return nil
-	}
-	return resources
-}
-
 func buildSecurityContext(svc model.Service) *securityContext {
 	ctx := &securityContext{}
 	hasAny := false
@@ -1829,6 +1915,14 @@ func buildEnvironmentVariables(
 		additionalNetworkAllowVariable: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable),
 		domainVariable:                 fmt.Sprintf("automatic package variable %q", domainVariable),
 	}
+	for _, svc := range app.Services {
+		resourceVariables := buildResourceVariableNames(svc.Name)
+		for _, name := range resourceVariables.all() {
+			if err := registerZarfVariable(usedVariables, name, fmt.Sprintf("automatic resource variable for service %q", svc.Name)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for _, secretName := range sortedSecretNames(app.Secrets) {
 		variable := secretVariables[secretName]
 		for _, name := range []string{variable.Value, variable.SecretName, variable.SecretKey} {
@@ -1909,6 +2003,27 @@ func registerZarfVariable(used map[string]string, name, owner string) error {
 	}
 	used[name] = owner
 	return nil
+}
+
+type resourceVariableNames struct {
+	CPURequest    string
+	MemoryRequest string
+	CPULimit      string
+	MemoryLimit   string
+}
+
+func buildResourceVariableNames(serviceName string) resourceVariableNames {
+	prefix := normalizeZarfVariableName(serviceName)
+	return resourceVariableNames{
+		CPURequest:    prefix + "_CPU_REQUEST",
+		MemoryRequest: prefix + "_MEMORY_REQUEST",
+		CPULimit:      prefix + "_CPU_LIMIT",
+		MemoryLimit:   prefix + "_MEMORY_LIMIT",
+	}
+}
+
+func (variables resourceVariableNames) all() []string {
+	return []string{variables.CPURequest, variables.MemoryRequest, variables.CPULimit, variables.MemoryLimit}
 }
 
 type secretVariableNames struct {
@@ -2462,9 +2577,20 @@ type chartMetadata struct {
 type chartValues struct {
 	AdditionalNetworkAllow any                             `yaml:"additionalNetworkAllow"`
 	Environment            map[string]map[string]string    `yaml:"environment,omitempty"`
+	Resources              map[string]resourceValues       `yaml:"resources"`
 	Secrets                map[string]string               `yaml:"secrets"`
 	ExternalSecrets        map[string]externalSecretValues `yaml:"externalSecrets,omitempty"`
 	UDS                    udsValues                       `yaml:"uds"`
+}
+
+type resourceValues struct {
+	Requests resourceQuantityValues `yaml:"requests"`
+	Limits   resourceQuantityValues `yaml:"limits"`
+}
+
+type resourceQuantityValues struct {
+	CPU    string `yaml:"cpu"`
+	Memory string `yaml:"memory"`
 }
 
 type udsValues struct {
