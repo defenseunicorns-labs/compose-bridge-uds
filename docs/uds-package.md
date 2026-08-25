@@ -29,10 +29,6 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 
 | Key | Purpose |
 |---|---|
-| `x-uds.package.name` | Package name (default: Compose project name). |
-| `x-uds.package.namespace` | Package namespace (default: Compose project name). |
-| `x-uds.package.group` | Group segment used by inferred SSO client IDs (default: `compose`). |
-| `x-uds.package.version` | Package version override. A semantic upstream version receives `-uds.0`; an existing `<upstream>-uds.<sub-version>` value is preserved. |
 | `x-uds.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service. |
 | `x-uds.network.allow[]` | Add network allow rules, deduplicated against inferred rules. |
 | `x-uds.monitor[]` | Add Prometheus monitoring rules, with service metadata inferred when possible. |
@@ -51,7 +47,7 @@ x-uds:
 
 ### Extension notes
 
-- **`x-uds.sso`:** Missing `clientId`, `name`, `redirectUris`, and `enableAuthserviceSelector` fields are inferred. Set `x-uds.package.group` to customize the group segment of inferred client IDs. Inferred redirect URIs use `DOMAIN`; explicitly supplied client IDs, names, and redirect URIs remain unchanged. An explicitly empty list disables inferred SSO without removing `DOMAIN` from the package interface.
+- **`x-uds.sso`:** Missing `clientId`, `name`, `redirectUris`, and `enableAuthserviceSelector` fields are inferred. The group segment of inferred client IDs defaults to `compose`. Inferred redirect URIs use `DOMAIN`; explicitly supplied client IDs, names, and redirect URIs remain unchanged. An explicitly empty list disables inferred SSO without removing `DOMAIN` from the package interface.
 - **`x-uds.monitor[]`:** When this key is absent, the bridge infers common metrics endpoints but cannot recognize every application-specific metrics configuration. When present, entries may be raw UDS `spec.monitor[]` items or use the bridge-only `service` key to infer labels and port metadata; no additional monitors are inferred. Set `portName` or `targetPort` for multi-port services, or set an empty list to disable monitoring.
 - **`x-uds.caBundle.configMap`:** This customizes the namespace trust-bundle ConfigMap. Trust bundle contents are configured separately in UDS Core.
 

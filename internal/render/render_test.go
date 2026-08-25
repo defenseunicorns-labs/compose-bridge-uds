@@ -215,32 +215,6 @@ services:
 			upstreamVersion: "0.1.0",
 			packageVersion:  "0.1.0-uds.0",
 		},
-		{
-			name: "explicit UDS version is preserved",
-			input: `name: demo
-x-uds:
-  package:
-    version: 5.6.7-uds.3
-services:
-  api:
-    image: ghcr.io/acme/api:latest
-`,
-			upstreamVersion: "5.6.7",
-			packageVersion:  "5.6.7-uds.3",
-		},
-		{
-			name: "explicit upstream version receives UDS suffix",
-			input: `name: demo
-x-uds:
-  package:
-    version: "5.6"
-services:
-  api:
-    image: ghcr.io/acme/api:latest
-`,
-			upstreamVersion: "5.6.0",
-			packageVersion:  "5.6.0-uds.0",
-		},
 	}
 
 	for _, tt := range tests {
@@ -255,38 +229,6 @@ services:
 			}
 			if got := app.Package.Version; got != tt.packageVersion {
 				t.Fatalf("Version = %q, want %q", got, tt.packageVersion)
-			}
-		})
-	}
-}
-
-func TestLoadCanonicalRejectsInvalidPackageVersion(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		version string
-		wantErr string
-	}{
-		{name: "non-version string", version: "latest", wantErr: `invalid x-uds.package.version: "latest" must begin with a numeric semantic version`},
-		{name: "non-string YAML value", version: "5.6", wantErr: "invalid x-uds.package.version: must be a non-empty string"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			input := []byte(`name: demo
-x-uds:
-  package:
-    version: ` + tt.version + `
-services:
-  api:
-    image: ghcr.io/acme/api:1.0.0
-`)
-
-			_, err := compose.LoadCanonicalYAML(input)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("LoadCanonicalYAML() error = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -320,9 +262,6 @@ services:
 secrets:
   build_token:
     file: /workspace/build-token.txt
-x-uds:
-  package:
-    version: 1.2.3
 `)
 
 	app, err := compose.LoadCanonicalYAML(input)
@@ -337,7 +276,7 @@ x-uds:
 	buildCompose := readYAMLMap(t, filepath.Join(outDir, "build.compose.yaml"))
 	services := mustMap(t, buildCompose["services"])
 	api := mustMap(t, services["api"])
-	if got := api["image"]; got != "zarf.internal/demo-api:1.2.3-uds.0" {
+	if got := api["image"]; got != "zarf.internal/demo-api:0.1.0-uds.0" {
 		t.Fatalf("expected internal API image, got %#v", got)
 	}
 	apiBuild := mustMap(t, api["build"])
@@ -359,9 +298,9 @@ x-uds:
 	for _, want := range []string{
 		"imageArchives:",
 		"path: image-archives/api.tar",
-		"zarf.internal/demo-api:1.2.3-uds.0",
+		"zarf.internal/demo-api:0.1.0-uds.0",
 		"path: image-archives/base-image.tar",
-		"zarf.internal/demo-base-image:1.2.3-uds.0",
+		"zarf.internal/demo-base-image:0.1.0-uds.0",
 		"redis:7.4-alpine",
 		"docker buildx bake",
 		"fs.read=/workspace",
@@ -959,10 +898,8 @@ services:
 func TestWritePackagePreservesDifferentNetworkMemberships(t *testing.T) {
 	t.Parallel()
 
-	input := []byte(`name: demo
+	input := []byte(`name: demo-ns
 x-uds:
-  package:
-    namespace: demo-ns
   network:
     allow:
       - description: external-api
@@ -1284,10 +1221,8 @@ secrets:
 func TestWritePackageWithConfigAndExpose(t *testing.T) {
 	t.Parallel()
 
-	input := []byte(`name: demo
+	input := []byte(`name: demo-ns
 x-uds:
-  package:
-    namespace: demo-ns
   network:
     expose:
       - service: api
@@ -1342,7 +1277,7 @@ configs:
 
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
 	for _, want := range []string{
-		"name: demo",
+		"name: demo-ns",
 		"namespace: demo-ns",
 		"localPath: chart",
 	} {
@@ -1930,13 +1865,10 @@ services:
 	}
 }
 
-func TestSSOAutoGenerationUsesConfiguredPackageGroup(t *testing.T) {
+func TestSSOAutoGenerationUsesDefaultPackageGroup(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: mattermost
-x-uds:
-  package:
-    group: software_factory
 services:
   web:
     image: mattermost/mattermost-team-edition:10.11.2
@@ -1950,8 +1882,8 @@ services:
 	if err != nil {
 		t.Fatalf("LoadCanonicalYAML() error = %v", err)
 	}
-	if got := app.Package.Group; got != "software-factory" {
-		t.Fatalf("Package.Group = %q, want software-factory", got)
+	if got := app.Package.Group; got != "compose" {
+		t.Fatalf("Package.Group = %q, want compose", got)
 	}
 	outDir := t.TempDir()
 	if err := render.WritePackage(outDir, app); err != nil {
@@ -1960,7 +1892,7 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: uds-software-factory-mattermost",
+		"clientId: uds-compose-mattermost",
 		"name: Mattermost Login",
 	} {
 		if !strings.Contains(udsPackage, want) {

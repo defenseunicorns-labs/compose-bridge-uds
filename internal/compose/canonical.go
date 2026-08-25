@@ -546,49 +546,6 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 		return config, nil
 	}
 
-	if pkg, ok := asMap(rootUDS["package"]); ok {
-		if value := strings.TrimSpace(asString(pkg["name"])); value != "" {
-			normalized, err := normalizeName(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.name: %w", err)
-			}
-			config.Name = normalized
-		}
-		if value := strings.TrimSpace(asString(pkg["namespace"])); value != "" {
-			normalized, err := normalizeName(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.namespace: %w", err)
-			}
-			config.Namespace = normalized
-		}
-		if rawGroup, exists := pkg["group"]; exists {
-			value, ok := rawGroup.(string)
-			value = strings.TrimSpace(value)
-			if !ok || value == "" {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: must be a non-empty string")
-			}
-			normalized, err := normalizeName(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: %w", err)
-			}
-			config.Group = strings.ReplaceAll(normalized, ".", "-")
-		}
-		if rawVersion, exists := pkg["version"]; exists {
-			value, ok := rawVersion.(string)
-			value = strings.TrimSpace(value)
-			if !ok || value == "" {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: must be a non-empty string")
-			}
-			upstreamVersion, packageVersion, err := normalizeConfiguredPackageVersion(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: %w", err)
-			}
-			config.UpstreamVersion = upstreamVersion
-			config.Version = packageVersion
-			config.VersionConfigured = true
-		}
-	}
-
 	if network, ok := asMap(rootUDS["network"]); ok {
 		if expose, ok := asSlice(network["expose"]); ok {
 			config.NetworkExpose = append(config.NetworkExpose, expose...)
