@@ -1182,7 +1182,7 @@ func buildAutoExposes(app model.App) []any {
 	return expose
 }
 
-// enrichNetworkExposes fills in missing fields on user-provided x-uds.network.expose entries.
+// enrichNetworkExposes fills in missing fields on user-provided x-uds.spec.network.expose entries.
 func enrichNetworkExposes(app model.App) []any {
 	serviceByName := buildServiceIndex(app.Services)
 	enriched := make([]any, 0, len(app.Package.NetworkExpose))
@@ -1253,12 +1253,12 @@ func buildMonitor(app model.App) ([]any, error) {
 			continue
 		}
 		if serviceName == "" {
-			return nil, fmt.Errorf("x-uds.monitor service must be a non-empty string")
+			return nil, fmt.Errorf("x-uds.spec.monitor service must be a non-empty string")
 		}
 
 		svc, found := serviceByName[serviceName]
 		if !found {
-			return nil, fmt.Errorf("x-uds.monitor service %q does not match a compose service", serviceName)
+			return nil, fmt.Errorf("x-uds.spec.monitor service %q does not match a compose service", serviceName)
 		}
 
 		delete(entry, "service")
@@ -1268,7 +1268,7 @@ func buildMonitor(app model.App) ([]any, error) {
 		setDefault(entry, "kind", "ServiceMonitor")
 		setDefault(entry, "path", "/metrics")
 		if err := enrichMonitorPortFields(entry, svc); err != nil {
-			return nil, fmt.Errorf("x-uds.monitor service %q: %w", serviceName, err)
+			return nil, fmt.Errorf("x-uds.spec.monitor service %q: %w", serviceName, err)
 		}
 		defaultMonitorAuthorization(entry)
 
@@ -1523,7 +1523,7 @@ func buildInferredSSO(app model.App) []any {
 	}
 }
 
-// enrichSSOEntries fills in missing fields on user-provided x-uds.sso entries.
+// enrichSSOEntries fills in missing fields on user-provided x-uds.spec.sso entries.
 func enrichSSOEntries(app model.App) []any {
 	host, service := findPrimaryExposedService(app)
 	enriched := make([]any, 0, len(app.Package.SSO))
