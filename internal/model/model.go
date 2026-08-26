@@ -101,6 +101,8 @@ type Package struct {
 	UpstreamVersion   string
 	Version           string
 	VersionConfigured bool
+	Labels            map[string]string
+	Annotations       map[string]string
 	NetworkExpose     []any
 	MonitorConfigured bool
 	Monitor           []any

@@ -402,7 +402,7 @@ func validateExcludedPackageReferences(pkg model.Package, excluded map[string]st
 		}
 		service := strings.TrimSpace(asString(entry["service"]))
 		if _, isExcluded := excluded[service]; isExcluded {
-			return fmt.Errorf("x-uds.network.expose references excluded service %q", service)
+			return fmt.Errorf("x-uds.spec.network.expose references excluded service %q", service)
 		}
 	}
 	for _, raw := range pkg.Monitor {
@@ -412,7 +412,7 @@ func validateExcludedPackageReferences(pkg model.Package, excluded map[string]st
 		}
 		service := strings.TrimSpace(asString(entry["service"]))
 		if _, isExcluded := excluded[service]; isExcluded {
-			return fmt.Errorf("x-uds.monitor references excluded service %q", service)
+			return fmt.Errorf("x-uds.spec.monitor references excluded service %q", service)
 		}
 	}
 	return nil
@@ -545,96 +545,183 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	if !ok {
 		return config, nil
 	}
+	keys := make([]string, 0, len(rootUDS))
+	for key := range rootUDS {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	unsupported := make([]string, 0)
+	legacyReplacements := map[string]string{
+		"allow":    "x-uds.spec.network.allow",
+		"caBundle": "x-uds.spec.caBundle",
+		"monitor":  "x-uds.spec.monitor",
+		"network":  "x-uds.spec.network",
+		"sso":      "x-uds.spec.sso",
+	}
+	for _, key := range keys {
+		if key == "metadata" || key == "spec" {
+			continue
+		}
+		if key == "package" {
+			legacyPackage, ok := asMap(rootUDS[key])
+			if !ok || len(legacyPackage) == 0 {
+				unsupported = append(unsupported, "x-uds.package (remove this field; use x-uds.metadata instead)")
+				continue
+			}
+			packageKeys := make([]string, 0, len(legacyPackage))
+			for packageKey := range legacyPackage {
+				packageKeys = append(packageKeys, packageKey)
+			}
+			sort.Strings(packageKeys)
+			for _, packageKey := range packageKeys {
+				path := "x-uds.package." + packageKey
+				switch packageKey {
+				case "name":
+					path += " (use x-uds.metadata.name)"
+				case "version":
+					path += " (use x-uds.metadata.version)"
+				case "namespace":
+					path += " (namespace is derived from x-uds.metadata.name or the Compose project name)"
+				case "group":
+					path += " (remove this field; generated SSO client IDs use the compose group)"
+				default:
+					path += " (x-uds.package has been removed)"
+				}
+				unsupported = append(unsupported, path)
+			}
+			continue
+		}
+		path := "x-uds." + key
+		if replacement, exists := legacyReplacements[key]; exists {
+			path += " (use " + replacement + ")"
+		}
+		unsupported = append(unsupported, path)
+	}
+	if len(unsupported) > 0 {
+		return model.Package{}, fmt.Errorf("unsupported fields:\n  - %s", strings.Join(unsupported, "\n  - "))
+	}
 
-	if pkg, ok := asMap(rootUDS["package"]); ok {
-		if value := strings.TrimSpace(asString(pkg["name"])); value != "" {
+	if rawMetadata, exists := rootUDS["metadata"]; exists {
+		metadata, ok := asMap(rawMetadata)
+		if !ok {
+			return model.Package{}, fmt.Errorf("invalid x-uds.metadata: must be an object")
+		}
+		if value := strings.TrimSpace(asString(metadata["name"])); value != "" {
 			normalized, err := normalizeName(value)
 			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.name: %w", err)
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.name: %w", err)
 			}
 			config.Name = normalized
-		}
-		if value := strings.TrimSpace(asString(pkg["namespace"])); value != "" {
-			normalized, err := normalizeName(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.namespace: %w", err)
-			}
 			config.Namespace = normalized
 		}
-		if rawGroup, exists := pkg["group"]; exists {
-			value, ok := rawGroup.(string)
-			value = strings.TrimSpace(value)
-			if !ok || value == "" {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: must be a non-empty string")
-			}
-			normalized, err := normalizeName(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.group: %w", err)
-			}
-			config.Group = strings.ReplaceAll(normalized, ".", "-")
-		}
-		if rawVersion, exists := pkg["version"]; exists {
+		if rawVersion, exists := metadata["version"]; exists {
 			value, ok := rawVersion.(string)
 			value = strings.TrimSpace(value)
 			if !ok || value == "" {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: must be a non-empty string")
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: must be a non-empty string")
 			}
 			upstreamVersion, packageVersion, err := normalizeConfiguredPackageVersion(value)
 			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.package.version: %w", err)
+				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: %w", err)
 			}
 			config.UpstreamVersion = upstreamVersion
 			config.Version = packageVersion
 			config.VersionConfigured = true
 		}
+		if rawLabels, exists := metadata["labels"]; exists {
+			labels, err := normalizeStringMap(rawLabels, "x-uds.metadata.labels")
+			if err != nil {
+				return model.Package{}, err
+			}
+			if len(labels) > 0 {
+				config.Labels = labels
+			}
+		}
+		if rawAnnotations, exists := metadata["annotations"]; exists {
+			annotations, err := normalizeStringMap(rawAnnotations, "x-uds.metadata.annotations")
+			if err != nil {
+				return model.Package{}, err
+			}
+			if len(annotations) > 0 {
+				config.Annotations = annotations
+			}
+		}
 	}
 
-	if network, ok := asMap(rootUDS["network"]); ok {
-		if expose, ok := asSlice(network["expose"]); ok {
+	rawSpec, exists := rootUDS["spec"]
+	if !exists {
+		return config, nil
+	}
+
+	spec, ok := asMap(rawSpec)
+	if !ok {
+		return model.Package{}, fmt.Errorf("invalid x-uds.spec: must be an object")
+	}
+	if err := parseSpecConfig(&config, spec, "x-uds.spec"); err != nil {
+		return model.Package{}, err
+	}
+
+	return config, nil
+}
+
+func parseSpecConfig(config *model.Package, spec map[string]any, path string) error {
+	if rawNetwork, exists := spec["network"]; exists {
+		network, ok := asMap(rawNetwork)
+		if !ok {
+			return fmt.Errorf("invalid %s.network: must be an object", path)
+		}
+		if rawExpose, exists := network["expose"]; exists {
+			expose, ok := asSlice(rawExpose)
+			if !ok {
+				return fmt.Errorf("invalid %s.network.expose: must be an array", path)
+			}
 			config.NetworkExpose = append(config.NetworkExpose, expose...)
 		}
-		if allow, ok := asSlice(network["allow"]); ok {
+		if rawAllow, exists := network["allow"]; exists {
+			allow, ok := asSlice(rawAllow)
+			if !ok {
+				return fmt.Errorf("invalid %s.network.allow: must be an array", path)
+			}
 			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
 		}
 	}
-	if rawMonitor, exists := rootUDS["monitor"]; exists {
+	if rawMonitor, exists := spec["monitor"]; exists {
 		config.MonitorConfigured = true
 		monitor, ok := asSlice(rawMonitor)
 		if !ok {
-			return model.Package{}, fmt.Errorf("invalid x-uds.monitor: must be an array")
+			return fmt.Errorf("invalid %s.monitor: must be an array", path)
 		}
 		config.Monitor = append(config.Monitor, monitor...)
 	}
-	if len(config.AdditionalAllow) == 0 {
-		if allow, ok := asSlice(rootUDS["allow"]); ok {
-			config.AdditionalAllow = append(config.AdditionalAllow, allow...)
-		}
-	}
 
-	if sso, ok := asSlice(rootUDS["sso"]); ok {
+	if rawSSO, exists := spec["sso"]; exists {
+		sso, ok := asSlice(rawSSO)
+		if !ok {
+			return fmt.Errorf("invalid %s.sso: must be an array", path)
+		}
 		config.SSOConfigured = true
 		config.SSO = append(config.SSO, sso...)
 	}
 
-	if rawCABundle, exists := rootUDS["caBundle"]; exists {
+	if rawCABundle, exists := spec["caBundle"]; exists {
 		caBundle, ok := asMap(rawCABundle)
 		if !ok {
-			return model.Package{}, fmt.Errorf("invalid x-uds.caBundle: must be an object")
+			return fmt.Errorf("invalid %s.caBundle: must be an object", path)
 		}
 
 		for key, value := range caBundle {
 			if key != "configMap" {
-				return model.Package{}, fmt.Errorf("invalid x-uds.caBundle.%s: unsupported field", key)
+				return fmt.Errorf("invalid %s.caBundle.%s: unsupported field", path, key)
 			}
-			configMap, err := normalizeCABundleConfigMap(value)
+			configMap, err := normalizeCABundleConfigMap(value, path+".caBundle.configMap")
 			if err != nil {
-				return model.Package{}, err
+				return err
 			}
 			config.CABundle = map[string]any{"configMap": configMap}
 		}
 	}
 
-	return config, nil
+	return nil
 }
 
 var upstreamVersionPattern = regexp.MustCompile(`^[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?(-[0-9A-Za-z.-]+)?$`)
@@ -752,10 +839,10 @@ func validPrerelease(value string) bool {
 	return true
 }
 
-func normalizeCABundleConfigMap(value any) (map[string]any, error) {
+func normalizeCABundleConfigMap(value any, field string) (map[string]any, error) {
 	configMap, ok := asMap(value)
 	if !ok {
-		return nil, fmt.Errorf("invalid x-uds.caBundle.configMap: must be an object")
+		return nil, fmt.Errorf("invalid %s: must be an object", field)
 	}
 
 	normalized := map[string]any{}
@@ -764,17 +851,17 @@ func normalizeCABundleConfigMap(value any) (map[string]any, error) {
 		case "name", "key":
 			value := strings.TrimSpace(asString(raw))
 			if value == "" {
-				return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: must be a non-empty string", key)
+				return nil, fmt.Errorf("invalid %s.%s: must be a non-empty string", field, key)
 			}
 			normalized[key] = value
 		case "labels", "annotations":
-			value, err := normalizeStringMap(raw, fmt.Sprintf("x-uds.caBundle.configMap.%s", key))
+			value, err := normalizeStringMap(raw, fmt.Sprintf("%s.%s", field, key))
 			if err != nil {
 				return nil, err
 			}
 			normalized[key] = value
 		default:
-			return nil, fmt.Errorf("invalid x-uds.caBundle.configMap.%s: unsupported field", key)
+			return nil, fmt.Errorf("invalid %s.%s: unsupported field", field, key)
 		}
 	}
 
@@ -1149,7 +1236,7 @@ func normalizeTopLevelNetworks(raw types.Networks) (map[string]string, error) {
 		registerAlias(aliases, key, normalized)
 		registerAlias(aliases, normalized, normalized)
 		if bool(network.External) {
-			fmt.Fprintf(os.Stderr, "warning: external Compose network %q treated as package-local; declare access to external workloads with x-uds.network.allow\n", key)
+			fmt.Fprintf(os.Stderr, "warning: external Compose network %q treated as package-local; declare access to external workloads with x-uds.spec.network.allow\n", key)
 		}
 	}
 	return aliases, nil

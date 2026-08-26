@@ -41,6 +41,7 @@ volumes:
   db_data: {}
 
 x-uds:
-  network:
-    expose:
-      - service: wordpress
+  spec:
+    network:
+      expose:
+        - service: wordpress

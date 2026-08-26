@@ -51,7 +51,7 @@ referenced remain included.
 Excluded services do not generate workloads, Services, images, dependency
 waits, policy exemptions, or other package content. Volumes, configs, and
 secrets used only by excluded services are pruned; resources shared with an
-included service remain. Explicit `x-uds.network.expose`, `x-uds.monitor`, and
+included service remain. Explicit `x-uds.spec.network.expose`, `x-uds.spec.monitor`, and
 build `additional_contexts` entries must not reference an excluded service.
 
 ## Runtime secrets
@@ -91,7 +91,7 @@ The four quantities are independent. A deployment can override one without resta
 
 ## Package domain
 
-Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaulting to `uds.dev`. The value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including inferred SSO redirect URIs. An `x-uds.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
+Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaulting to `uds.dev`. The value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including inferred SSO redirect URIs. An `x-uds.spec.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
 
 `DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
 
@@ -99,7 +99,7 @@ Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaul
 
 Every generated package exposes the non-sensitive Zarf variable `ADDITIONAL_NETWORK_ALLOW`, defaulting to `[]`. Its value must be a YAML array of UDS network allow rules. The rules are appended to the generated UDS Package resource so operators can provide environment-specific ingress or egress without modifying the Compose application or rebuilding the package.
 
-Rules declared under `x-uds.network.allow` remain static package defaults for connectivity that Compose cannot express. Compose-derived and static rules are rendered first; `ADDITIONAL_NETWORK_ALLOW` entries are appended afterward.
+Rules declared under `x-uds.spec.network.allow` remain static package defaults for connectivity that Compose cannot express. Compose-derived and static rules are rendered first; `ADDITIONAL_NETWORK_ALLOW` entries are appended afterward.
 
 ## Local Dockerfile builds
 
@@ -134,10 +134,10 @@ Deferred builds cannot automatically determine what to expose by examining the D
 
 ## Configuration notes
 
-- **Auto-expose port selection:** For services with multiple published ports, prefer Compose long syntax with `name` or `app_protocol` to identify the web-facing port. Use `x-uds.network.expose[].port` to pin the intended port when inference is ambiguous. The bridge does not automatically skip SSH, DNS, UDP, or other non-HTTP-looking ports.
+- **Auto-expose port selection:** For services with multiple published ports, prefer Compose long syntax with `name` or `app_protocol` to identify the web-facing port. Use `x-uds.spec.network.expose[].port` to pin the intended port when inference is ambiguous. The bridge does not automatically skip SSH, DNS, UDP, or other non-HTTP-looking ports.
 - **Bind mounts:** Bind mounts are treated as local-development-only inputs and omitted from the rendered chart with a warning. Use a named volume when the data should become a PVC, or a config or secret when the mounted content should be materialized in Kubernetes.
 - **Network topology:** A shared Compose network maps to the package namespace. When services join different network sets, the bridge labels Pods by membership and allows communication only between services that share a network.
-- **External networks:** Membership among converted services is preserved, but external peers cannot be inferred from the transformation input. Conversion emits a warning; declare cross-package traffic explicitly with `x-uds.network.allow`.
+- **External networks:** Membership among converted services is preserved, but external peers cannot be inferred from the transformation input. Conversion emits a warning; declare cross-package traffic explicitly with `x-uds.spec.network.allow`.
 - **Port names:** The bridge preserves explicit Compose port names after Kubernetes-compatible sanitization. For unnamed ports, it generates `port-<number>-<protocol>` (for example, port-5432-tcp) instead of assuming an HTTP port. Conversion fails when two ports in the same service resolve to the same Kubernetes port name.
 - **Docker runtime settings:** Host networking, alternate runtimes and platforms, sysctls, Docker discovery labels, and custom stop signals are rejected when they cannot be represented faithfully.
 
