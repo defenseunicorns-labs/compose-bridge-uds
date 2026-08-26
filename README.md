@@ -19,7 +19,7 @@ This walkthrough deploys UDS Core Slim Dev on k3d, then packages and deploys Wor
 
 ```sh
 # 1. Create a local k3d cluster with UDS Core Slim Dev
-uds zarf package deploy oci://ghcr.io/defenseunicorns/dev/uds/checkpoints/k3d-core-slim-dev:1.9.0
+uds zarf package deploy oci://ghcr.io/defenseunicorns/dev/uds/checkpoints/k3d-core-slim-dev:1.11.1
 
 # 2. Transform the Compose application into a UDS Package
 cd examples/simple
