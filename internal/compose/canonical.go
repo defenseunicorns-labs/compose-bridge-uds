@@ -557,6 +557,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.name: %w", err)
 			}
 			config.Name = normalized
+			config.Namespace = normalized
 		}
 		if rawVersion, exists := metadata["version"]; exists {
 			value, ok := rawVersion.(string)

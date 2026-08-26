@@ -294,6 +294,30 @@ services:
 	}
 }
 
+func TestLoadCanonicalMetadataNameOverridesPackageNameAndNamespace(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: compose-project
+x-uds:
+  metadata:
+    name: custom-package
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if got := app.Package.Name; got != "custom-package" {
+		t.Fatalf("Package.Name = %q, want custom-package", got)
+	}
+	if got := app.Package.Namespace; got != "custom-package" {
+		t.Fatalf("Package.Namespace = %q, want custom-package", got)
+	}
+}
+
 func TestWritePackageGeneratesBuildWorkspaceAndImageArchives(t *testing.T) {
 	t.Parallel()
 
