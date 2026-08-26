@@ -318,6 +318,181 @@ services:
 	}
 }
 
+func TestLoadCanonicalMapsDocumentedXUDSEnvelope(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: compose-project
+x-uds:
+  metadata:
+    name: custom-package
+    version: "2.3"
+    labels:
+      app.kubernetes.io/part-of: platform
+    annotations:
+      example.com/owner: platform-team
+  spec:
+    network:
+      expose:
+        - service: api
+          host: custom-api
+      allow:
+        - direction: Egress
+          remoteHost: api.example.com
+    monitor:
+      - service: api
+    sso:
+      - clientId: custom-client
+    caBundle:
+      configMap:
+        name: custom-trust-bundle
+        key: roots.pem
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+
+	if got := app.Package.Name; got != "custom-package" {
+		t.Fatalf("Package.Name = %q, want custom-package", got)
+	}
+	if got := app.Package.Namespace; got != "custom-package" {
+		t.Fatalf("Package.Namespace = %q, want custom-package", got)
+	}
+	if got := app.Package.Group; got != "compose" {
+		t.Fatalf("Package.Group = %q, want compose", got)
+	}
+	if got := app.Package.UpstreamVersion; got != "2.3.0" {
+		t.Fatalf("Package.UpstreamVersion = %q, want 2.3.0", got)
+	}
+	if got := app.Package.Version; got != "2.3.0-uds.0" {
+		t.Fatalf("Package.Version = %q, want 2.3.0-uds.0", got)
+	}
+	if got := app.Package.Labels["app.kubernetes.io/part-of"]; got != "platform" {
+		t.Fatalf("package label = %q, want platform", got)
+	}
+	if got := app.Package.Annotations["example.com/owner"]; got != "platform-team" {
+		t.Fatalf("package annotation = %q, want platform-team", got)
+	}
+
+	if len(app.Package.NetworkExpose) != 1 {
+		t.Fatalf("NetworkExpose = %#v, want one entry", app.Package.NetworkExpose)
+	}
+	if got := mustMap(t, app.Package.NetworkExpose[0])["host"]; got != "custom-api" {
+		t.Fatalf("network expose host = %#v, want custom-api", got)
+	}
+	if len(app.Package.AdditionalAllow) != 1 {
+		t.Fatalf("AdditionalAllow = %#v, want one entry", app.Package.AdditionalAllow)
+	}
+	if got := mustMap(t, app.Package.AdditionalAllow[0])["remoteHost"]; got != "api.example.com" {
+		t.Fatalf("network allow remoteHost = %#v, want api.example.com", got)
+	}
+	if !app.Package.MonitorConfigured || len(app.Package.Monitor) != 1 {
+		t.Fatalf("monitor configuration = (%t, %#v), want one explicit entry", app.Package.MonitorConfigured, app.Package.Monitor)
+	}
+	if got := mustMap(t, app.Package.Monitor[0])["service"]; got != "api" {
+		t.Fatalf("monitor service = %#v, want api", got)
+	}
+	if !app.Package.SSOConfigured || len(app.Package.SSO) != 1 {
+		t.Fatalf("SSO configuration = (%t, %#v), want one explicit entry", app.Package.SSOConfigured, app.Package.SSO)
+	}
+	if got := mustMap(t, app.Package.SSO[0])["clientId"]; got != "custom-client" {
+		t.Fatalf("SSO clientId = %#v, want custom-client", got)
+	}
+	configMap := mustMap(t, mustMap(t, app.Package.CABundle)["configMap"])
+	if got := configMap["name"]; got != "custom-trust-bundle" {
+		t.Fatalf("caBundle ConfigMap name = %#v, want custom-trust-bundle", got)
+	}
+	if got := configMap["key"]; got != "roots.pem" {
+		t.Fatalf("caBundle ConfigMap key = %#v, want roots.pem", got)
+	}
+}
+
+func TestLoadCanonicalRejectsUnexpectedTopLevelXUDSKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config string
+		want   []string
+	}{
+		{
+			name:   "legacy package",
+			config: "package:\n    name: legacy-name\n    namespace: legacy-namespace\n    group: legacy-group\n    version: 9.9.9",
+			want: []string{
+				"x-uds.package.name (use x-uds.metadata.name)",
+				"x-uds.package.namespace (namespace is derived from x-uds.metadata.name or the Compose project name)",
+				"x-uds.package.group (remove this field; generated SSO client IDs use the compose group)",
+				"x-uds.package.version (use x-uds.metadata.version)",
+			},
+		},
+		{
+			name:   "empty legacy package",
+			config: "package: {}",
+			want:   []string{"x-uds.package (remove this field; use x-uds.metadata instead)"},
+		},
+		{name: "legacy network", config: "network: {}", want: []string{"x-uds.network", "use x-uds.spec.network"}},
+		{name: "legacy monitor", config: "monitor: []", want: []string{"x-uds.monitor", "use x-uds.spec.monitor"}},
+		{name: "legacy allow", config: "allow: []", want: []string{"x-uds.allow", "use x-uds.spec.network.allow"}},
+		{name: "legacy sso", config: "sso: []", want: []string{"x-uds.sso", "use x-uds.spec.sso"}},
+		{name: "legacy caBundle", config: "caBundle: {}", want: []string{"x-uds.caBundle", "use x-uds.spec.caBundle"}},
+		{name: "unknown field", config: "unexpected: true", want: []string{"x-uds.unexpected"}},
+		{
+			name:   "multiple unsupported fields",
+			config: "unexpected: true\n  network: {}\n  package:\n    name: legacy-name",
+			want: []string{
+				"x-uds.network (use x-uds.spec.network)",
+				"x-uds.package.name (use x-uds.metadata.name)",
+				"x-uds.unexpected",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			input := []byte(fmt.Sprintf(`name: demo
+x-uds:
+  %s
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+`, tt.config))
+
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil {
+				t.Fatalf("LoadCanonicalYAML() error = nil, want unsupported field error containing %v", tt.want)
+			}
+			if tt.name == "multiple unsupported fields" {
+				t.Logf("received expected error: %v", err)
+				want := `unsupported fields:
+  - x-uds.network (use x-uds.spec.network)
+  - x-uds.package.name (use x-uds.metadata.name)
+  - x-uds.unexpected`
+				if err.Error() != want {
+					t.Fatalf("LoadCanonicalYAML() error = %q, want %q", err, want)
+				}
+			}
+			if !strings.Contains(err.Error(), "unsupported fields") {
+				t.Fatalf("LoadCanonicalYAML() error = %q, want unsupported fields error", err)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("LoadCanonicalYAML() error = %q, want error containing %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWritePackageGeneratesBuildWorkspaceAndImageArchives(t *testing.T) {
 	t.Parallel()
 
@@ -3854,6 +4029,55 @@ services:
 		if !strings.Contains(udsPackage, want) {
 			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
 		}
+	}
+}
+
+func TestWritePackageExplicitNetworkExposeReplacesInference(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  spec:
+    network:
+      expose:
+        - service: api
+          host: custom-api
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+  admin:
+    image: ghcr.io/acme/admin:1.0.0
+    ports:
+      - target: 9090
+        published: "9090"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	network := mustMap(t, mustMap(t, udsPackage["spec"])["network"])
+	exposes, ok := network["expose"].([]any)
+	if !ok || len(exposes) != 1 {
+		t.Fatalf("network expose = %#v, want exactly one explicit rule", network["expose"])
+	}
+	expose := mustMap(t, exposes[0])
+	if got := expose["service"]; got != "api" {
+		t.Fatalf("expose service = %#v, want api", got)
+	}
+	if got := expose["host"]; got != "custom-api" {
+		t.Fatalf("expose host = %#v, want custom-api", got)
 	}
 }
 

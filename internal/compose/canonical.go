@@ -545,6 +545,61 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 	if !ok {
 		return config, nil
 	}
+	keys := make([]string, 0, len(rootUDS))
+	for key := range rootUDS {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	unsupported := make([]string, 0)
+	legacyReplacements := map[string]string{
+		"allow":    "x-uds.spec.network.allow",
+		"caBundle": "x-uds.spec.caBundle",
+		"monitor":  "x-uds.spec.monitor",
+		"network":  "x-uds.spec.network",
+		"sso":      "x-uds.spec.sso",
+	}
+	for _, key := range keys {
+		if key == "metadata" || key == "spec" {
+			continue
+		}
+		if key == "package" {
+			legacyPackage, ok := asMap(rootUDS[key])
+			if !ok || len(legacyPackage) == 0 {
+				unsupported = append(unsupported, "x-uds.package (remove this field; use x-uds.metadata instead)")
+				continue
+			}
+			packageKeys := make([]string, 0, len(legacyPackage))
+			for packageKey := range legacyPackage {
+				packageKeys = append(packageKeys, packageKey)
+			}
+			sort.Strings(packageKeys)
+			for _, packageKey := range packageKeys {
+				path := "x-uds.package." + packageKey
+				switch packageKey {
+				case "name":
+					path += " (use x-uds.metadata.name)"
+				case "version":
+					path += " (use x-uds.metadata.version)"
+				case "namespace":
+					path += " (namespace is derived from x-uds.metadata.name or the Compose project name)"
+				case "group":
+					path += " (remove this field; generated SSO client IDs use the compose group)"
+				default:
+					path += " (x-uds.package has been removed)"
+				}
+				unsupported = append(unsupported, path)
+			}
+			continue
+		}
+		path := "x-uds." + key
+		if replacement, exists := legacyReplacements[key]; exists {
+			path += " (use " + replacement + ")"
+		}
+		unsupported = append(unsupported, path)
+	}
+	if len(unsupported) > 0 {
+		return model.Package{}, fmt.Errorf("unsupported fields:\n  - %s", strings.Join(unsupported, "\n  - "))
+	}
 
 	if rawMetadata, exists := rootUDS["metadata"]; exists {
 		metadata, ok := asMap(rawMetadata)
