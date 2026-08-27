@@ -3,7 +3,7 @@
 Convert a Docker Compose application into a deployable [UDS](https://uds.defenseunicorns.com/) package using [Docker Compose Bridge](https://docs.docker.com/compose/bridge/). The transformation consumes a fully-resolved Compose model and emits a Helm chart tailored for UDS, ready for `zarf package create` and `zarf package deploy`.
 
 > [!IMPORTANT]
-> **This is not a supported product pathway.** It's an experimental transformation we're sharing to gather feedback. Please enagage with our team on the project [discussions page](https://github.com/defenseunicorns-labs/compose-bridge-uds/discussions) with any questions or suggestions.
+> **This is not a supported product pathway.** It's an experimental transformation we're sharing to gather feedback. Please enagage with our team on the project [discussions page](https://github.com/defenseunicorns/compose-bridge-uds/discussions) with any questions or suggestions.
 
 ![Screenshot of a diagram depicting the packaging process via the conventional approach versus the Compose Bridge approach.](/docs/diagram.png)
 
@@ -23,7 +23,7 @@ uds zarf package deploy oci://ghcr.io/defenseunicorns/dev/uds/checkpoints/k3d-co
 
 # 2. Transform the Compose application into a UDS Package
 cd examples/simple
-docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+docker compose bridge convert -t ghcr.io/defenseunicorns/compose-bridge-uds
 
 # 3. Build and deploy the package
 zarf package create out/ --flavor upstream
