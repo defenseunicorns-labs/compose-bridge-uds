@@ -110,7 +110,7 @@ Docker Compose v5.5.0 or later can pass a build-only service through Compose Bri
 ```sh
 cd examples/full
 docker compose build
-docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+docker compose bridge convert -t ghcr.io/defenseunicorns/compose-bridge-uds
 zarf package create out
 ```
 
@@ -118,7 +118,7 @@ zarf package create out
 
 ```sh
 cd examples/full
-docker compose bridge convert -t ghcr.io/defenseunicorns-labs/compose-bridge-uds
+docker compose bridge convert -t ghcr.io/defenseunicorns/compose-bridge-uds
 zarf package create out
 ```
 
