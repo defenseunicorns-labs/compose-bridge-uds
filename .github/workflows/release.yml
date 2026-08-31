@@ -1,22 +1,33 @@
-name: Create Release
+name: Release Please
+
 on:
   push:
-    tags:
-      - "v*" # Trigger for any tag starting with 'v', e.g., v1.2.3
+    branches:
+      - main
 
 jobs:
-  release:
+  release-please:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create a release
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      checkout_ref: ${{ steps.release.outputs.sha }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      release_tag: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create or update release pull request
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
 
-      - name: Create Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} \
-            --title "Release ${{ github.ref_name }}" \
-            --generate-notes
+  build-release-image:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build.yml
+    with:
+      checkout_ref: ${{ needs.release-please.outputs.checkout_ref }}
+      release_tag: ${{ needs.release-please.outputs.release_tag }}
