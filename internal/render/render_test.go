@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -909,9 +911,9 @@ networks:
 
 	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
 	for _, want := range []string{
-		"external compose secret shared-password requires a Kubernetes Secret name",
-		".Values.externalSecrets.SHARED_PASSWORD.name",
-		".Values.externalSecrets.SHARED_PASSWORD.key",
+		"external compose secret shared-password requires a valid Kubernetes Secret name",
+		`dig "SHARED_PASSWORD" "name" "" (.Values.externalSecrets | default (dict))`,
+		`dig "SHARED_PASSWORD" "key" "" (.Values.externalSecrets | default (dict))`,
 		"mountPath: /run/secrets/shared-password",
 		"subPath: shared-password",
 	} {
@@ -3683,13 +3685,264 @@ secrets:
 
 	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
 	for _, want := range []string{
-		".Values.externalSecrets.OPERATOR_CREDENTIAL.name",
-		".Values.externalSecrets.OPERATOR_CREDENTIAL.key",
+		`dig "OPERATOR_CREDENTIAL" "name" "" (.Values.externalSecrets | default (dict))`,
+		`dig "OPERATOR_CREDENTIAL" "key" "" (.Values.externalSecrets | default (dict))`,
 		"mountPath: /etc/shop/database-password",
 		"subPath: operator-credential",
 	} {
 		if !strings.Contains(deployment, want) {
 			t.Fatalf("expected custom external secret file mount %q\n%s", want, deployment)
+		}
+	}
+}
+
+func TestWritePackageNativeExternalConfigUsesConfigMapNameAndKeyVariables(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    configs:
+      - source: operator-settings
+        target: /etc/shop/settings.yaml
+configs:
+  operator-settings:
+    external: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if !app.Configs["operator-settings"].External {
+		t.Fatalf("expected native external Compose config to remain external, got %#v", app.Configs)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "configmap-operator-settings.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no chart-owned ConfigMap for native external config, stat err = %v", err)
+	}
+
+	chartValues := readFile(t, filepath.Join(outDir, "chart", "values.yaml"))
+	for _, want := range []string{
+		"externalConfigs:",
+		"OPERATOR_SETTINGS:",
+		"name: \"\"",
+		"key: operator-settings",
+	} {
+		if !strings.Contains(chartValues, want) {
+			t.Fatalf("expected chart values to contain %q\n%s", want, chartValues)
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	for _, want := range []string{
+		"###ZARF_VAR_OPERATOR_SETTINGS_CONFIGMAP_NAME###",
+		"###ZARF_VAR_OPERATOR_SETTINGS_CONFIGMAP_KEY###",
+	} {
+		if !strings.Contains(zarfValues, want) {
+			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
+		}
+	}
+
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{
+		"name: OPERATOR_SETTINGS_CONFIGMAP_NAME",
+		"name: OPERATOR_SETTINGS_CONFIGMAP_KEY",
+		"default: operator-settings",
+	} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected external config variable %q\n%s", want, zarfConfig)
+		}
+	}
+	if strings.Contains(zarfConfig, "sensitive: true") || strings.Contains(zarfConfig, "prompt: true") {
+		t.Fatalf("external ConfigMap references must not prompt or be sensitive\n%s", zarfConfig)
+	}
+
+	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
+	for _, want := range []string{
+		"| `OPERATOR_SETTINGS_CONFIGMAP_NAME` | Kubernetes ConfigMap name for external Compose config operator-settings | — | false |",
+		"| `OPERATOR_SETTINGS_CONFIGMAP_KEY` | Key in the Kubernetes ConfigMap for external Compose config operator-settings | operator-settings | false |",
+	} {
+		if !strings.Contains(configuration, want) {
+			t.Fatalf("expected generated configuration documentation to contain %q\n%s", want, configuration)
+		}
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		"external compose config operator-settings requires a valid Kubernetes ConfigMap name",
+		`dig "OPERATOR_SETTINGS" "name" "" (.Values.externalConfigs | default (dict))`,
+		`dig "OPERATOR_SETTINGS" "key" "" (.Values.externalConfigs | default (dict))`,
+		"path: operator-settings",
+		"mountPath: /etc/shop/settings.yaml",
+		"subPath: operator-settings",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected custom external config file mount %q\n%s", want, deployment)
+		}
+	}
+}
+
+func TestExternalConfigEdgeCasesRenderAsValidKubernetesVolumes(t *testing.T) {
+	configName := "1.operator.settings.with-a-very-long-name-that-exceeds-the-kubernetes-volume-name-limit"
+	valuesKey := "1_OPERATOR_SETTINGS_WITH_A_VERY_LONG_NAME_THAT_EXCEEDS_THE_KUBERNETES_VOLUME_NAME_LIMIT"
+	input := []byte(fmt.Sprintf(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    configs:
+      - source: %s
+        target: /etc/shop/settings.yaml
+      - source: %s
+        target: /etc/shop/settings-backup.yaml
+configs:
+  %s:
+    external: true
+`, configName, configName, configName))
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	deploymentTemplate := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	for _, want := range []string{
+		`name: {{ include "composeBridge.externalResourceName"`,
+		`key: {{ include "composeBridge.externalResourceKey"`,
+		fmt.Sprintf(`dig %q "name" "" (.Values.externalConfigs | default (dict))`, valuesKey),
+		fmt.Sprintf(`dig %q "key" "" (.Values.externalConfigs | default (dict))`, valuesKey),
+	} {
+		if !strings.Contains(deploymentTemplate, want) {
+			t.Fatalf("expected external config deployment template to contain %q\n%s", want, deploymentTemplate)
+		}
+	}
+	if strings.Contains(deploymentTemplate, ".Values.externalConfigs."+valuesKey) {
+		t.Fatalf("digit-leading values key must not use Helm field syntax\n%s", deploymentTemplate)
+	}
+	if got := strings.Count(deploymentTemplate, "configMap:"); got != 1 {
+		t.Fatalf("expected one ConfigMap volume for two targets, got %d\n%s", got, deploymentTemplate)
+	}
+	if got := strings.Count(deploymentTemplate, "mountPath: /etc/shop/settings"); got != 2 {
+		t.Fatalf("expected two mounts for the shared ConfigMap volume, got %d\n%s", got, deploymentTemplate)
+	}
+
+	helpers := readFile(t, filepath.Join(outDir, "chart", "templates", "_helpers.tpl"))
+	for _, want := range []string{
+		`$value | quote`,
+		`regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"`,
+		`regexMatch "^[-._a-zA-Z0-9]+$"`,
+	} {
+		if !strings.Contains(helpers, want) {
+			t.Fatalf("expected Helm validation helpers to contain %q\n%s", want, helpers)
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "name: |-\n") || !strings.Contains(zarfValues, "key: |-\n") {
+		t.Fatalf("external reference variables must use YAML block scalars\n%s", zarfValues)
+	}
+
+	helmPath, err := exec.LookPath("helm")
+	if err != nil {
+		t.Log("helm not installed; generated-template assertions completed")
+		return
+	}
+	chartDir := filepath.Join(outDir, "chart")
+	render := func(t *testing.T, name, key string) ([]byte, error) {
+		t.Helper()
+		overrides, marshalErr := yamlv3.Marshal(map[string]any{
+			"externalConfigs": map[string]any{
+				valuesKey: map[string]string{"name": name, "key": key},
+			},
+		})
+		if marshalErr != nil {
+			t.Fatalf("marshal Helm overrides: %v", marshalErr)
+		}
+		valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+		if writeErr := os.WriteFile(valuesPath, overrides, 0o644); writeErr != nil {
+			t.Fatalf("write Helm overrides: %v", writeErr)
+		}
+		return exec.Command(helmPath, "template", "shop", chartDir, "--values", valuesPath).CombinedOutput()
+	}
+
+	rendered, err := render(t, "operator-settings", "settings.yaml")
+	if err != nil {
+		t.Fatalf("helm template valid external ConfigMap reference: %v\n%s", err, rendered)
+	}
+	deployment := findYAMLDocumentByKind(t, rendered, "Deployment")
+	podSpec := mustMap(t, mustMap(t, mustMap(t, deployment["spec"])["template"])["spec"])
+	volumes := podSpec["volumes"].([]any)
+	if len(volumes) != 1 {
+		t.Fatalf("rendered Deployment has %d volumes, want 1: %#v", len(volumes), volumes)
+	}
+	volume := mustMap(t, volumes[0])
+	volumeName := volume["name"].(string)
+	if len(volumeName) > 63 || !regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`).MatchString(volumeName) {
+		t.Fatalf("generated volume name %q is not a Kubernetes DNS label", volumeName)
+	}
+	configMap := mustMap(t, volume["configMap"])
+	if configMap["name"] != "operator-settings" {
+		t.Fatalf("unexpected rendered ConfigMap name: %#v", configMap)
+	}
+	containers := podSpec["containers"].([]any)
+	mounts := mustMap(t, containers[0])["volumeMounts"].([]any)
+	if len(mounts) != 2 || mustMap(t, mounts[0])["name"] != volumeName || mustMap(t, mounts[1])["name"] != volumeName {
+		t.Fatalf("expected both target paths to reuse volume %q: %#v", volumeName, mounts)
+	}
+
+	injected, err := render(t, "operator-settings'\noptional: true", "settings.yaml")
+	if err == nil || !strings.Contains(string(injected), "requires a valid Kubernetes ConfigMap name") {
+		t.Fatalf("expected Helm to reject a YAML-structure injection value, err = %v\n%s", err, injected)
+	}
+	invalidDNSName, err := render(t, "operator..settings", "settings.yaml")
+	if err == nil || !strings.Contains(string(invalidDNSName), "requires a valid Kubernetes ConfigMap name") {
+		t.Fatalf("expected Helm to reject an invalid DNS subdomain, err = %v\n%s", err, invalidDNSName)
+	}
+}
+
+func TestLoadCanonicalConfigLogicalKeyPrecedesPlatformNameAlias(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    configs:
+      - source: settings
+        target: /etc/shop/settings.yaml
+configs:
+  actual:
+    name: settings
+    external: true
+  settings:
+    external: true
+`)
+
+	for i := 0; i < 100; i++ {
+		app, err := compose.LoadCanonicalYAML(input)
+		if err != nil {
+			t.Fatalf("LoadCanonicalYAML() iteration %d error = %v", i, err)
+		}
+		if len(app.Services) != 1 || len(app.Services[0].Configs) != 1 {
+			t.Fatalf("unexpected config references on iteration %d: %#v", i, app.Services)
+		}
+		if got := app.Services[0].Configs[0].Source; got != "settings" {
+			t.Fatalf("logical Compose config key lost precedence on iteration %d: got %q", i, got)
+		}
+		if _, exists := app.Configs["settings"]; !exists {
+			t.Fatalf("expected logical settings config to be retained on iteration %d: %#v", i, app.Configs)
+		}
+		if _, exists := app.Configs["actual"]; exists {
+			t.Fatalf("platform-name alias incorrectly retained actual config on iteration %d: %#v", i, app.Configs)
 		}
 	}
 }
@@ -3917,6 +4170,20 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 				},
 			},
 			wantErr: `generates Zarf variable "API_TOKEN_SECRET_NAME", which conflicts with compose secret "api-token"`,
+		},
+		{
+			name: "external config reference variable collision",
+			app: model.App{
+				Package: model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{
+					Name: "api-settings-configmap", Image: "ghcr.io/acme/api:1.0.0",
+					Env: []model.EnvVar{{Name: "NAME", Value: "not-a-config-reference"}},
+				}},
+				Configs: map[string]model.Config{
+					"api-settings": {Name: "api-settings", External: true},
+				},
+			},
+			wantErr: `generates Zarf variable "API_SETTINGS_CONFIGMAP_NAME", which conflicts with compose config "api-settings"`,
 		},
 		{
 			name: "cross-service variable collision",
@@ -4161,6 +4428,26 @@ func readUDSPackageYAMLMap(t *testing.T, path string) map[string]any {
 		t.Fatalf("unmarshal Helm-stripped yaml %s: %v", path, err)
 	}
 	return out
+}
+
+func findYAMLDocumentByKind(t *testing.T, content []byte, kind string) map[string]any {
+	t.Helper()
+	decoder := yamlv3.NewDecoder(bytes.NewReader(content))
+	for {
+		var document map[string]any
+		err := decoder.Decode(&document)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode rendered YAML: %v\n%s", err, content)
+		}
+		if document["kind"] == kind {
+			return document
+		}
+	}
+	t.Fatalf("rendered YAML did not contain kind %s\n%s", kind, content)
+	return nil
 }
 
 func readFile(t *testing.T, path string) string {
