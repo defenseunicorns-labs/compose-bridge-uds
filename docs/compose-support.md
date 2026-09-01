@@ -8,7 +8,7 @@
 | `build:`                                                         | Preserved as a generated Buildx Bake definition. `zarf package create` builds the image and adds its OCI archive to the package.                                                                                                                                                |
 | Named `volumes:`                                                 | Converted to PersistentVolumeClaims (`1Gi`, `ReadWriteOnce` by default).                                                                                                                                                                                                        |
 | `secrets:`                                                       | Delivered as read-only files. Secrets used only by packaged services become package-owned Kubernetes Secrets. Native external secrets and secrets shared with excluded services reference deployment-provided Kubernetes Secret names and keys.                                                                                               |
-| `configs:`                                                       | Converted to reloadable ConfigMaps. Must use inline `content:` (no external file references).                                                                                                                                                                                   |
+| `configs:`                                                       | Delivered as read-only files. Inline `content:` becomes a reloadable package-owned ConfigMap. Native external configs reference deployment-provided Kubernetes ConfigMap names and keys.                                                                                        |
 | `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
 | `depends_on:`                                                    | Required dependencies become init-container wait logic using `netcat` (busybox). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service. Included dependencies must declare a port.                                                                                       |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
@@ -20,9 +20,6 @@
 | `networks:`                                                      | Service membership is preserved with Pod labels and selector-scoped UDS ingress and egress rules when services use different network sets. The ordinary `bridge` driver is accepted. External networks warn because external peers cannot be inferred; aliases, addresses, and driver options remain unsupported. |
 | Bind mounts                                                      | Skipped during conversion with a warning because host paths do not have a portable Kubernetes equivalent. Use named `volumes:`, `configs:`, or `secrets:` for data that should be rendered into the chart.                                                                       |
 | `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `chart/templates/uds-exemption.yaml`.                                                                                                                 |
-
-External configs referenced by an included service are not supported. A
-packaged `configs:` entry must define inline `content:`.
 
 ## Excluding development services
 
@@ -77,11 +74,22 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 ## Runtime configuration
 
+Compose configs with inline `content:` become package-owned ConfigMaps. A native
+Compose `external: true` config is not created by the generated chart. Instead,
+the package declares non-sensitive `<CONFIG>_CONFIGMAP_NAME` and
+`<CONFIG>_CONFIGMAP_KEY` Zarf variables. The name has no default and must
+identify an existing ConfigMap in the package namespace. The key defaults to the
+normalized Compose config name. The selected key is mounted at the file path
+declared by the service's config reference. External ConfigMaps are mounted with
+`subPath`, so updates require a Pod restart. To have UDS trigger that restart,
+the external ConfigMap's owner must apply the `uds.dev/pod-reload: "true"`
+label; otherwise perform a rollout after changing it.
+
 Every resolved service environment value becomes a non-sensitive Zarf variable named `<SERVICE>_<ENVIRONMENT_VARIABLE>`. The value resolved by `docker compose config`, including an empty value, is retained as its deployment default in `zarf.yaml`.
 
-The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. Direct Helm deployments do not provide that UDS reload behavior.
+The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, secrets, and automatic package variables such as resource settings, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
 ## Deployment resources
 

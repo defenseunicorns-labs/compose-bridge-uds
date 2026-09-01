@@ -277,11 +277,6 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 		}
 	}
 	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
-	for name, config := range configs {
-		if config.External && strings.TrimSpace(config.Content) == "" {
-			return model.App{}, fmt.Errorf("external compose config %q is not supported", name)
-		}
-	}
 	if err := validateExcludedPackageReferences(packageCfg, excludedAliases); err != nil {
 		return model.App{}, err
 	}
@@ -724,8 +719,10 @@ func parseSpecConfig(config *model.Package, spec map[string]any, path string) er
 	return nil
 }
 
-var upstreamVersionPattern = regexp.MustCompile(`^[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?(-[0-9A-Za-z.-]+)?$`)
-var udsVersionPattern = regexp.MustCompile(`^(.+)-uds\.([0-9]+)$`)
+var (
+	upstreamVersionPattern = regexp.MustCompile(`^[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?(-[0-9A-Za-z.-]+)?$`)
+	udsVersionPattern      = regexp.MustCompile(`^(.+)-uds\.([0-9]+)$`)
+)
 
 func inferUpstreamVersion(services []model.Service) string {
 	if len(services) == 0 {
@@ -1244,8 +1241,14 @@ func normalizeTopLevelNetworks(raw types.Networks) (map[string]string, error) {
 
 func normalizeTopLevelSecrets(raw types.Secrets) (map[string]model.Secret, map[string]string, error) {
 	secrets := map[string]model.Secret{}
-	aliases := map[string]string{}
-	for key, value := range raw {
+	candidates := make([]namedResourceAlias, 0, len(raw))
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := raw[key]
 		normalized, err := normalizeName(key)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid top-level secret name %q: %w", key, err)
@@ -1254,19 +1257,25 @@ func normalizeTopLevelSecrets(raw types.Secrets) (map[string]model.Secret, map[s
 			return nil, nil, fmt.Errorf("duplicate normalized top-level secret name %q", normalized)
 		}
 		secrets[normalized] = model.Secret{Name: normalized, External: bool(value.External)}
-		registerAlias(aliases, key, normalized)
-		registerAlias(aliases, normalized, normalized)
-		if strings.TrimSpace(value.Name) != "" {
-			registerAlias(aliases, value.Name, normalized)
-		}
+		candidates = append(candidates, namedResourceAlias{Key: key, Normalized: normalized, PlatformName: value.Name})
+	}
+	aliases, err := buildNamedResourceAliases("secret", candidates)
+	if err != nil {
+		return nil, nil, err
 	}
 	return secrets, aliases, nil
 }
 
 func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[string]string, error) {
 	configs := map[string]model.Config{}
-	aliases := map[string]string{}
-	for key, value := range raw {
+	candidates := make([]namedResourceAlias, 0, len(raw))
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := raw[key]
 		normalized, err := normalizeName(key)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid top-level config name %q: %w", key, err)
@@ -1275,11 +1284,11 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 			return nil, nil, fmt.Errorf("duplicate normalized top-level config name %q", normalized)
 		}
 		configs[normalized] = model.Config{Name: normalized, External: bool(value.External), Content: value.Content}
-		registerAlias(aliases, key, normalized)
-		registerAlias(aliases, normalized, normalized)
-		if strings.TrimSpace(value.Name) != "" {
-			registerAlias(aliases, value.Name, normalized)
-		}
+		candidates = append(candidates, namedResourceAlias{Key: key, Normalized: normalized, PlatformName: value.Name})
+	}
+	aliases, err := buildNamedResourceAliases("config", candidates)
+	if err != nil {
+		return nil, nil, err
 	}
 	return configs, aliases, nil
 }
@@ -1375,6 +1384,50 @@ func anonymousVolumeName(serviceName string, target string) string {
 		return "volume"
 	}
 	return name
+}
+
+type namedResourceAlias struct {
+	Key          string
+	Normalized   string
+	PlatformName string
+}
+
+// buildNamedResourceAliases gives Compose's logical top-level keys precedence
+// over optional platform resource names.
+func buildNamedResourceAliases(resourceKind string, candidates []namedResourceAlias) (map[string]string, error) {
+	aliases := map[string]string{}
+	directAliases := map[string]struct{}{}
+	for _, candidate := range candidates {
+		for _, raw := range []string{candidate.Key, candidate.Normalized} {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				continue
+			}
+			registerAlias(aliases, trimmed, candidate.Normalized)
+			directAliases[trimmed] = struct{}{}
+		}
+	}
+
+	for _, candidate := range candidates {
+		platformName := strings.TrimSpace(candidate.PlatformName)
+		if platformName == "" {
+			continue
+		}
+		if _, direct := directAliases[platformName]; direct {
+			continue
+		}
+		if existing, exists := aliases[platformName]; exists && existing != candidate.Normalized {
+			return nil, fmt.Errorf(
+				"ambiguous top-level %s platform name %q resolves to both %q and %q",
+				resourceKind,
+				platformName,
+				existing,
+				candidate.Normalized,
+			)
+		}
+		registerAlias(aliases, platformName, candidate.Normalized)
+	}
+	return aliases, nil
 }
 
 func registerAlias(aliases map[string]string, raw string, normalized string) {
