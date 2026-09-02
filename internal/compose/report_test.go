@@ -128,6 +128,95 @@ x-uds:
 	}
 }
 
+func TestConvertCanonicalYAMLCompatibilityRejectionRemovesTranslatedNetwork(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    networks:
+      - custom
+networks:
+  custom:
+    driver_opts:
+      encrypted: "true"
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want unsupported network options")
+	}
+
+	requireDecision(t, conversion.Report.Rejected, "networks.custom")
+	if hasDecision(conversion.Report.Translated, "networks.custom") {
+		t.Fatalf("translated decisions unexpectedly include rejected network path: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLUnsupportedVolumeTypeIsNotTranslated(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    volumes:
+      - type: tmpfs
+        target: /tmp/cache
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want unsupported volume type")
+	}
+
+	requireDecision(t, conversion.Report.Rejected, "services.api.volumes")
+	if hasDecision(conversion.Report.Translated, "services.api.volumes[0]") {
+		t.Fatalf("translated decisions unexpectedly include unsupported volume mount: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLInvalidMetadataNameIsIgnoredAndInferred(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+x-uds:
+  metadata:
+    name:
+      bad: value
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Ignored, "x-uds.metadata.name")
+	requireDecision(t, conversion.Report.Inferred, "x-uds.metadata.name")
+	if hasDecision(conversion.Report.Translated, "x-uds.metadata.name") {
+		t.Fatalf("translated decisions unexpectedly include invalid metadata.name: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLInferredExposeAlsoInfersSSO(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - "8080:8080"
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Inferred, "x-uds.spec.network.expose")
+	sso := requireDecision(t, conversion.Report.Inferred, "x-uds.spec.sso")
+	if sso.Value != "api" {
+		t.Fatalf("inferred sso value = %q, want api", sso.Value)
+	}
+}
+
 func hasDecision(decisions []model.ConversionDecision, path string) bool {
 	for _, decision := range decisions {
 		if decision.Path == path {

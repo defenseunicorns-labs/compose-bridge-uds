@@ -202,7 +202,9 @@ func addVolumeDecisions(report *model.ConversionReport, servicePath string, volu
 			})
 			continue
 		}
-		report.Translated = append(report.Translated, translatedDecision(path, "Deployment volume mount"))
+		if mountType == "" || mountType == types.VolumeTypeVolume {
+			report.Translated = append(report.Translated, translatedDecision(path, "Deployment volume mount"))
+		}
 	}
 }
 
@@ -302,6 +304,13 @@ func addUDSExtensionDecisions(report *model.ConversionReport, raw map[string]any
 	if metadata, ok := asMap(uds["metadata"]); ok {
 		for _, key := range sortedNames(metadata) {
 			path := "x-uds.metadata." + key
+			if key == "name" && strings.TrimSpace(asString(metadata[key])) == "" {
+				report.Ignored = append(report.Ignored, model.ConversionDecision{
+					Path:    path,
+					Message: "This metadata.name value is empty or invalid, so package identity is inferred from the Compose project name.",
+				})
+				continue
+			}
 			if _, supported := supportedUDSMetadataKeys[key]; supported {
 				report.Translated = append(report.Translated, translatedDecision(path, "package metadata"))
 				continue
@@ -375,10 +384,14 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 	}
 
 	if len(app.Package.NetworkExpose) == 0 {
+		primaryExposedService := ""
 		for _, service := range app.Services {
 			for _, port := range service.Ports {
 				if !port.Published {
 					continue
+				}
+				if primaryExposedService == "" {
+					primaryExposedService = service.Name
 				}
 				report.Inferred = append(report.Inferred, model.ConversionDecision{
 					Path:    "x-uds.spec.network.expose",
@@ -387,6 +400,13 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 				})
 				break
 			}
+		}
+		if !app.Package.SSOConfigured && primaryExposedService != "" {
+			report.Inferred = append(report.Inferred, model.ConversionDecision{
+				Path:    "x-uds.spec.sso",
+				Value:   primaryExposedService,
+				Message: "Inferred default SSO client configuration from the inferred service exposure.",
+			})
 		}
 	}
 

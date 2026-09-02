@@ -84,14 +84,17 @@ func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, err
 	if err := validateCompatibility(*project, raw, excludedServices); err != nil {
 		var compatibilityErr *CompatibilityError
 		if errors.As(err, &compatibilityErr) {
+			decisions := make([]model.ConversionDecision, 0, len(compatibilityErr.Issues))
 			for _, issue := range compatibilityErr.Issues {
-				report.Rejected = append(report.Rejected, model.ConversionDecision{
+				decisions = append(decisions, model.ConversionDecision{
 					Path:        issue.Path,
 					Code:        issue.Code,
 					Message:     issue.Message,
 					Remediation: issue.Remediation,
 				})
 			}
+			removeConflictingTranslatedDecisions(&report, decisions)
+			report.Rejected = append(report.Rejected, decisions...)
 		}
 		sortConversionReport(&report)
 		return model.Conversion{Report: report}, err

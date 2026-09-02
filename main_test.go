@@ -126,6 +126,49 @@ services:
 	}
 }
 
+func TestRunWritesStructuredRenderFailureForInvalidMonitorSetting(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "compose.yaml")
+	outputPath := filepath.Join(dir, "out")
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - "8080:8080"
+x-uds:
+  spec:
+    monitor:
+      - service: missing
+`)
+	if err := os.WriteFile(inputPath, input, 0o644); err != nil {
+		t.Fatalf("write Compose input: %v", err)
+	}
+
+	err := run(inputPath, outputPath)
+	if err == nil {
+		t.Fatal("run() error = nil, want monitor validation error")
+	}
+
+	report := readConversionReport(t, filepath.Join(outputPath, "conversion.json"))
+	assertDecisionPath(t, report.Rejected, "x-uds.spec.monitor")
+	for _, decision := range report.Rejected {
+		if decision.Path != "x-uds.spec.monitor" {
+			continue
+		}
+		if decision.Code != "invalid-setting" || decision.Remediation == "" {
+			t.Fatalf("unexpected rejected decision = %#v", decision)
+		}
+	}
+	for _, decision := range report.Translated {
+		if decision.Path == "x-uds.spec.monitor" {
+			t.Fatalf("translated decisions unexpectedly include invalid monitor path: %#v", report.Translated)
+		}
+	}
+}
+
 func readConversionReport(t *testing.T, path string) model.ConversionReport {
 	t.Helper()
 	data, err := os.ReadFile(path)

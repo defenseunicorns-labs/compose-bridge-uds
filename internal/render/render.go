@@ -84,14 +84,49 @@ func WriteConversion(root string, conversion model.Conversion) error {
 		return err
 	}
 	if err := writePackage(root, conversion.App, true); err != nil {
-		conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
-			Path:    "package",
-			Code:    "package-generation",
-			Message: err.Error(),
-		})
+		if decisions := renderFailureDecisions(err); len(decisions) > 0 {
+			removeConflictingTranslatedDecisions(&conversion.Report, decisions)
+			conversion.Report.Rejected = append(conversion.Report.Rejected, decisions...)
+		} else {
+			conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
+				Path:    "package",
+				Code:    "package-generation",
+				Message: err.Error(),
+			})
+		}
 		return errors.Join(err, WriteConversionReport(root, conversion.Report))
 	}
 	return nil
+}
+
+var monitorRenderFailurePattern = regexp.MustCompile(`^x-uds\.spec\.monitor(?:\b| )`)
+
+func renderFailureDecisions(err error) []model.ConversionDecision {
+	message := err.Error()
+	if monitorRenderFailurePattern.MatchString(message) {
+		return []model.ConversionDecision{{
+			Path:        "x-uds.spec.monitor",
+			Code:        "invalid-setting",
+			Message:     message,
+			Remediation: "ensure each monitor entry references a Compose service and valid service port settings",
+		}}
+	}
+	return nil
+}
+
+func removeConflictingTranslatedDecisions(report *model.ConversionReport, decisions []model.ConversionDecision) {
+	paths := make(map[string]struct{}, len(decisions))
+	for _, decision := range decisions {
+		paths[decision.Path] = struct{}{}
+	}
+	filtered := report.Translated[:0]
+	for _, decision := range report.Translated {
+		if _, conflict := paths[decision.Path]; conflict {
+			continue
+		}
+		filtered = append(filtered, decision)
+	}
+	report.Translated = filtered
 }
 
 func writePackage(root string, app model.App, includeConversionReport bool) error {
