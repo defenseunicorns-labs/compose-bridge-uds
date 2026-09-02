@@ -118,14 +118,14 @@ func validateCompatibility(project types.Project, raw map[string]any, excludedSe
 				continue
 			}
 			dependency, exists := project.Services[dependencyName]
-			if !exists || len(dependency.Ports) > 0 || len(dependency.Expose) > 0 {
+			if !exists || hasDeclaredTCPPort(dependency) {
 				continue
 			}
 			issues = append(issues, CompatibilityIssue{
 				Code:        "dependency-port",
 				Path:        path + ".depends_on." + dependencyName,
-				Message:     fmt.Sprintf("dependency %q has no declared service port for generated wait logic", dependencyName),
-				Remediation: fmt.Sprintf("declare ports or expose on service %q, or mark the dependency required: false", dependencyName),
+				Message:     fmt.Sprintf("dependency %q has no declared TCP service port for generated wait logic", dependencyName),
+				Remediation: fmt.Sprintf("declare a TCP port in ports or expose on service %q, or mark the dependency required: false", dependencyName),
 			})
 		}
 
@@ -173,4 +173,25 @@ func validateCompatibility(project types.Project, raw map[string]any, excludedSe
 		return issues[i].Path < issues[j].Path
 	})
 	return &CompatibilityError{Issues: issues}
+}
+
+func hasDeclaredTCPPort(service types.ServiceConfig) bool {
+	for _, port := range service.Ports {
+		if port.Target == 0 {
+			continue
+		}
+		if protocolOrDefault(port.Protocol) == "TCP" {
+			return true
+		}
+	}
+	for _, token := range service.Expose {
+		port, proto, err := parsePortToken(token)
+		if err != nil || port <= 0 {
+			continue
+		}
+		if protocolOrDefault(proto) == "TCP" {
+			return true
+		}
+	}
+	return false
 }

@@ -12,25 +12,22 @@ import (
 )
 
 var translatedServiceSettings = map[string]string{
-	"build":        "generated Buildx Bake service",
-	"cap_add":      "Deployment container security context",
-	"cap_drop":     "Deployment container security context",
-	"command":      "Deployment container arguments",
-	"configs":      "Deployment config volume mounts",
-	"depends_on":   "Deployment dependency init containers",
-	"entrypoint":   "Deployment container command",
-	"environment":  "environment ConfigMap and deploy-time variables",
-	"env_file":     "environment ConfigMap and deploy-time variables",
-	"expose":       "Kubernetes Service ports",
-	"hostname":     "Deployment Pod hostname",
-	"image":        "Zarf package image and Deployment container image",
-	"networks":     "UDS network policy selectors",
-	"ports":        "Kubernetes Service ports and UDS gateway exposure",
-	"privileged":   "Deployment container security context and UDS exemption",
-	"secrets":      "Deployment secret volume mounts",
-	"security_opt": "Deployment container security context and UDS exemption",
-	"stdin_open":   "Deployment container stdin setting",
-	"user":         "Deployment container security context",
+	"cap_add":     "Deployment container security context",
+	"cap_drop":    "Deployment container security context",
+	"command":     "Deployment container arguments",
+	"configs":     "Deployment config volume mounts",
+	"depends_on":  "Deployment dependency init containers",
+	"entrypoint":  "Deployment container command",
+	"environment": "environment ConfigMap and deploy-time variables",
+	"expose":      "Kubernetes Service ports",
+	"hostname":    "Deployment Pod hostname",
+	"image":       "Zarf package image and Deployment container image",
+	"networks":    "UDS network policy selectors",
+	"ports":       "Kubernetes Service ports",
+	"privileged":  "Deployment container security context and UDS exemption",
+	"secrets":     "Deployment secret volume mounts",
+	"stdin_open":  "Deployment container stdin setting",
+	"user":        "Deployment container security context",
 }
 
 var supportedUDSMetadataKeys = map[string]struct{}{
@@ -55,11 +52,23 @@ var supportedUDSNetworkKeys = map[string]struct{}{
 func rejectedConversion(path, code string, err error) (model.Conversion, error) {
 	report := newConversionReport()
 	report.Rejected = append(report.Rejected, model.ConversionDecision{
-		Path:    path,
-		Code:    code,
-		Message: err.Error(),
+		Path:        path,
+		Code:        code,
+		Message:     err.Error(),
+		Remediation: rejectedConversionRemediation(code),
 	})
 	return model.Conversion{Report: report}, err
+}
+
+func rejectedConversionRemediation(code string) string {
+	switch code {
+	case "read-error":
+		return "verify the Compose input file path exists and is readable by the converter"
+	case "decode-error":
+		return "fix malformed Compose YAML and ensure extension values match the expected schema"
+	default:
+		return "address the reported conversion error and rerun conversion"
+	}
 }
 
 func newConversionReport() model.ConversionReport {
@@ -112,6 +121,8 @@ func buildConversionReport(project types.Project, raw map[string]any, excludedSe
 		for _, key := range keys {
 			path := servicePath + "." + key
 			switch key {
+			case "build":
+				addBuildDecisions(&report, path, rawService[key])
 			case "depends_on":
 				if hasPackagedDependency(service.DependsOn, excludedServices) {
 					report.Translated = append(report.Translated, translatedDecision(path, translatedServiceSettings[key]))
@@ -158,6 +169,13 @@ func buildConversionReport(project types.Project, raw map[string]any, excludedSe
 				} else {
 					report.Translated = append(report.Translated, translatedDecision(path, translatedServiceSettings[key]))
 				}
+			case "env_file":
+				report.Ignored = append(report.Ignored, model.ConversionDecision{
+					Path:    path,
+					Message: "env_file entries are not resolved by this converter; resolve them into explicit environment values in canonical Compose input.",
+				})
+			case "security_opt":
+				addSecurityOptionDecisions(&report, path, service.SecurityOpt)
 			default:
 				if target, ok := translatedServiceSettings[key]; ok {
 					report.Translated = append(report.Translated, translatedDecision(path, target))
@@ -224,6 +242,46 @@ func addVolumeDecisions(report *model.ConversionReport, servicePath string, volu
 		if mountType == "" || mountType == types.VolumeTypeVolume {
 			report.Translated = append(report.Translated, translatedDecision(path, "Deployment volume mount"))
 		}
+	}
+}
+
+func addBuildDecisions(report *model.ConversionReport, path string, value any) {
+	build, ok := asMap(value)
+	if !ok {
+		report.Translated = append(report.Translated, translatedDecision(path, "generated Buildx Bake service"))
+		return
+	}
+	for _, key := range sortedNames(build) {
+		settingPath := path + "." + key
+		if key == "tags" {
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    settingPath,
+				Message: "build.tags is not translated; generated image tags are controlled by the converter.",
+			})
+			continue
+		}
+		report.Translated = append(report.Translated, translatedDecision(settingPath, "generated Buildx Bake service"))
+	}
+}
+
+func addSecurityOptionDecisions(report *model.ConversionReport, path string, options []string) {
+	if len(options) == 0 {
+		report.Ignored = append(report.Ignored, model.ConversionDecision{
+			Path:    path,
+			Message: "security_opt is not translated unless it is seccomp:unconfined.",
+		})
+		return
+	}
+	for i, option := range options {
+		optionPath := fmt.Sprintf("%s[%d]", path, i)
+		if strings.EqualFold(strings.TrimSpace(option), "seccomp:unconfined") {
+			report.Translated = append(report.Translated, translatedDecision(optionPath, "UDS exemption"))
+			continue
+		}
+		report.Ignored = append(report.Ignored, model.ConversionDecision{
+			Path:    optionPath,
+			Message: "This security_opt value is not translated; only seccomp:unconfined generates a UDS exemption.",
+		})
 	}
 }
 

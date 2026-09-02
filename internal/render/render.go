@@ -90,9 +90,10 @@ func WriteConversion(root string, conversion model.Conversion) error {
 			conversion.Report.Rejected = append(conversion.Report.Rejected, decisions...)
 		} else {
 			conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
-				Path:    "package",
-				Code:    "package-generation",
-				Message: err.Error(),
+				Path:        "package",
+				Code:        "package-generation",
+				Message:     err.Error(),
+				Remediation: "address the reported package-generation error and rerun conversion",
 			})
 		}
 		return errors.Join(err, WriteConversionReport(root, conversion.Report))
@@ -216,8 +217,8 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
-		if len(svc.Ports) > 0 {
-			servicePorts[svc.Name] = svc.Ports[0].Number
+		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
+			servicePorts[svc.Name] = port
 		}
 	}
 
@@ -1735,6 +1736,18 @@ func titleCase(name string) string {
 
 func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
 	return primaryGatewayPort(ports, true)
+}
+
+func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
+	for _, port := range ports {
+		if port.Number <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
+			return port.Number, true
+		}
+	}
+	return 0, false
 }
 
 func primaryGatewayPort(ports []model.Port, requirePublished bool) (model.Port, bool) {

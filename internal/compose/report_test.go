@@ -39,6 +39,20 @@ x-uds:
 	}
 }
 
+func TestConvertCanonicalFileReadFailureIncludesRemediation(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalFile(filepath.Join(t.TempDir(), "missing-compose.yaml"))
+	if err == nil {
+		t.Fatal("ConvertCanonicalFile() error = nil, want read error")
+	}
+
+	rejected := requireDecision(t, conversion.Report.Rejected, "compose")
+	if rejected.Code != "read-error" || rejected.Remediation == "" {
+		t.Fatalf("rejected decision = %#v, want read-error with remediation", rejected)
+	}
+}
+
 func TestConvertCanonicalFileAlignsReportWithConsumedSettings(t *testing.T) {
 	t.Parallel()
 
@@ -361,6 +375,149 @@ services:
 	requireDecision(t, conversion.Report.Rejected, "services.api.depends_on.db")
 	if hasDecision(conversion.Report.Translated, "services.api.depends_on") {
 		t.Fatalf("translated decisions unexpectedly include rejected dependency: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLRejectsDependencyWithOnlyUDPPort(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    depends_on:
+      - dns
+  dns:
+    image: docker.io/library/bind:9.20
+    expose:
+      - "53/udp"
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want dependency TCP port rejection")
+	}
+
+	rejected := requireDecision(t, conversion.Report.Rejected, "services.api.depends_on.dns")
+	if rejected.Code != "dependency-port" {
+		t.Fatalf("rejected code = %q, want dependency-port", rejected.Code)
+	}
+}
+
+func TestConvertCanonicalYAMLReportsExcludedServiceReferenceAtExtensionPath(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    depends_on:
+      db:
+        condition: service_started
+        required: false
+  db:
+    image: docker.io/library/postgres:18
+x-uds:
+  spec:
+    network:
+      expose:
+        - service: db
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want excluded service reference")
+	}
+
+	rejected := requireDecision(t, conversion.Report.Rejected, "x-uds.spec.network.expose")
+	if rejected.Code != "invalid-setting" || rejected.Remediation == "" {
+		t.Fatalf("rejected decision = %#v, want invalid-setting with remediation", rejected)
+	}
+	if hasDecision(conversion.Report.Translated, "x-uds.spec.network.expose") {
+		t.Fatalf("translated decisions unexpectedly include rejected extension path: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLReportsBuildTagsAsIgnored(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    build:
+      context: .
+      tags:
+        - ghcr.io/acme/custom:latest
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Translated, "services.api.build.context")
+	requireDecision(t, conversion.Report.Ignored, "services.api.build.tags")
+	if hasDecision(conversion.Report.Translated, "services.api.build") {
+		t.Fatalf("translated decisions unexpectedly include broad build path: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLEnvFileIsIgnoredInReport(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    env_file: .env
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Ignored, "services.api.env_file")
+	if hasDecision(conversion.Report.Translated, "services.api.env_file") {
+		t.Fatalf("translated decisions unexpectedly include env_file: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLReportsSecurityOptPerValue(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    security_opt:
+      - seccomp:unconfined
+      - no-new-privileges:true
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Translated, "services.api.security_opt[0]")
+	requireDecision(t, conversion.Report.Ignored, "services.api.security_opt[1]")
+	if hasDecision(conversion.Report.Translated, "services.api.security_opt") {
+		t.Fatalf("translated decisions unexpectedly include broad security_opt path: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLPortsTranslationExcludesGatewayClaim(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - "8080:8080"
+x-uds:
+  spec:
+    network:
+      expose: []
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	decision := requireDecision(t, conversion.Report.Translated, "services.api.ports")
+	if decision.Target != "Kubernetes Service ports" {
+		t.Fatalf("ports target = %q, want Kubernetes Service ports", decision.Target)
 	}
 }
 
