@@ -77,10 +77,12 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 Compose configs with inline `content:` become package-owned ConfigMaps. A native
 Compose `external: true` config is not created by the generated chart. Instead,
 the package declares non-sensitive `<CONFIG>_CONFIGMAP_NAME` and
-`<CONFIG>_CONFIGMAP_KEY` Zarf variables. The name has no default and must
-identify an existing ConfigMap in the package namespace. The key defaults to the
-normalized Compose config name. The selected key is mounted at the file path
-declared by the service's config reference. External ConfigMaps are mounted with
+`<CONFIG>_CONFIGMAP_KEY` Zarf variables. The ConfigMap name variable defaults to
+the Compose config's platform name: its declared `name:`, or its logical key
+when `name:` is omitted. The name must identify an existing ConfigMap in the
+package namespace. The key defaults to the normalized Compose config name. The
+selected key is mounted at the file path declared by the service's config
+reference. External ConfigMaps are mounted with
 `subPath`, so updates require a Pod restart. To have UDS trigger that restart,
 the external ConfigMap's owner must apply the `uds.dev/pod-reload: "true"`
 label; otherwise perform a rollout after changing it.
