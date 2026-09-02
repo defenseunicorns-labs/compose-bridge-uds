@@ -34,6 +34,7 @@ go.work.sum
 
 # Test data outputs
 examples/**/out/
+.test-artifacts/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst

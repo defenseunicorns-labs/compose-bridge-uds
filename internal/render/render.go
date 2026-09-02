@@ -90,10 +90,9 @@ func WriteConversion(root string, conversion model.Conversion) error {
 			conversion.Report.Rejected = append(conversion.Report.Rejected, decisions...)
 		} else {
 			conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
-				Path:        "package",
-				Code:        "package-generation",
-				Message:     err.Error(),
-				Remediation: "address the reported package-generation error and rerun conversion",
+				Path:    "package",
+				Code:    "package-generation",
+				Message: err.Error(),
 			})
 		}
 		return errors.Join(err, WriteConversionReport(root, conversion.Report))
@@ -217,8 +216,8 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
-		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
-			servicePorts[svc.Name] = port
+		if len(svc.Ports) > 0 {
+			servicePorts[svc.Name] = svc.Ports[0].Number
 		}
 	}
 
@@ -444,7 +443,7 @@ func buildConfigurationDocumentation(app model.App, secretVariables map[string]s
 			continue
 		}
 		variable := configVariables[configName]
-		writeDocumentationVariable(&content, variable.ConfigMapName, fmt.Sprintf("Kubernetes ConfigMap name for external Compose config %s", configName), config.ExternalName, false)
+		writeDocumentationVariable(&content, variable.ConfigMapName, fmt.Sprintf("Kubernetes ConfigMap name for external Compose config %s", configName), "", false)
 		writeDocumentationVariable(&content, variable.ConfigMapKey, fmt.Sprintf("Key in the Kubernetes ConfigMap for external Compose config %s", configName), config.Name, false)
 	}
 
@@ -912,10 +911,7 @@ func writeChartValues(
 			continue
 		}
 		variable := configVariables[name]
-		external := externalResourceValues{
-			Name: plainChartString(config.ExternalName),
-			Key:  plainChartString(config.Name),
-		}
+		external := externalResourceValues{Key: plainChartString(config.Name)}
 		if placeholder {
 			external.Name = zarfChartString(variable.ConfigMapName)
 			external.Key = zarfChartString(variable.ConfigMapKey)
@@ -1009,7 +1005,6 @@ func writeZarfConfig(
 			zarfVariable{
 				Name:        variable.ConfigMapName,
 				Description: fmt.Sprintf("Kubernetes ConfigMap name for external compose config %s", configName),
-				Default:     optionalStringPointer(config.ExternalName),
 				AutoIndent:  true,
 			},
 			zarfVariable{
@@ -1742,18 +1737,6 @@ func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
 	return primaryGatewayPort(ports, true)
 }
 
-func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
-	for _, port := range ports {
-		if port.Number <= 0 {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
-			return port.Number, true
-		}
-	}
-	return 0, false
-}
-
 func primaryGatewayPort(ports []model.Port, requirePublished bool) (model.Port, bool) {
 	for _, port := range ports {
 		if gatewayPortCandidate(port, requirePublished) && port.HasWebHint() {
@@ -2384,13 +2367,6 @@ func normalizeZarfVariableName(raw string) string {
 
 func stringPointer(value string) *string {
 	return &value
-}
-
-func optionalStringPointer(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return stringPointer(value)
 }
 
 func buildPortName(port model.Port) string {

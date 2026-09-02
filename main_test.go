@@ -248,37 +248,6 @@ services:
 	}
 }
 
-func TestRunWritesFallbackPackageGenerationRemediation(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "compose.yaml")
-	outputPath := filepath.Join(dir, "out")
-	if err := os.WriteFile(inputPath, []byte(`name: demo
-services:
-  api:
-    image: ghcr.io/acme/api:1.2.3
-`), 0o644); err != nil {
-		t.Fatalf("write Compose input: %v", err)
-	}
-	if err := os.MkdirAll(outputPath, 0o755); err != nil {
-		t.Fatalf("create output directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(outputPath, "chart"), []byte("not-a-directory"), 0o644); err != nil {
-		t.Fatalf("create chart file: %v", err)
-	}
-
-	if err := run(inputPath, outputPath); err == nil {
-		t.Fatal("run() error = nil, want package generation error")
-	}
-
-	report := readConversionReport(t, filepath.Join(outputPath, "conversion.json"))
-	decision := findDecision(t, report.Rejected, "package")
-	if decision.Code != "package-generation" || decision.Remediation == "" {
-		t.Fatalf("fallback rejected decision = %#v, want package-generation with remediation", decision)
-	}
-}
-
 func readConversionReport(t *testing.T, path string) model.ConversionReport {
 	t.Helper()
 	data, err := os.ReadFile(path)

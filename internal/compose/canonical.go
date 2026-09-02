@@ -20,7 +20,6 @@ import (
 )
 
 var invalidSettingPattern = regexp.MustCompile(`^invalid ([^:]+): (.+)$`)
-var excludedServiceReferencePattern = regexp.MustCompile(`^(x-uds\.spec\.(?:network\.expose|monitor)) references excluded service "([^"]+)"$`)
 
 func LoadCanonicalFile(path string) (model.App, error) {
 	conversion, err := ConvertCanonicalFile(path)
@@ -138,29 +137,16 @@ func loadProjectDecisions(err error) []model.ConversionDecision {
 	}
 
 	matches := invalidSettingPattern.FindStringSubmatch(message)
-	if len(matches) == 3 {
-		path := matches[1]
-		return []model.ConversionDecision{{
-			Path:        path,
-			Code:        "invalid-setting",
-			Message:     matches[2],
-			Remediation: remediationForInvalidSetting(path),
-		}}
+	if len(matches) != 3 {
+		return nil
 	}
-
-	matches = excludedServiceReferencePattern.FindStringSubmatch(message)
-	if len(matches) == 3 {
-		path := matches[1]
-		service := matches[2]
-		return []model.ConversionDecision{{
-			Path:        path,
-			Code:        "invalid-setting",
-			Message:     fmt.Sprintf("references excluded service %q", service),
-			Remediation: remediationForExcludedServiceReference(path, service),
-		}}
-	}
-
-	return nil
+	path := matches[1]
+	return []model.ConversionDecision{{
+		Path:        path,
+		Code:        "invalid-setting",
+		Message:     matches[2],
+		Remediation: remediationForInvalidSetting(path),
+	}}
 }
 
 func parseUnsupportedField(rawPath string) (string, string) {
@@ -200,17 +186,6 @@ func remediationForInvalidSetting(path string) string {
 		return "set this field to a non-empty string"
 	default:
 		return "correct the invalid x-uds setting so it matches the expected Compose extension schema"
-	}
-}
-
-func remediationForExcludedServiceReference(path, service string) string {
-	switch path {
-	case "x-uds.spec.network.expose":
-		return fmt.Sprintf("remove %q from x-uds.spec.network.expose or mark the dependency as required so the service is packaged", service)
-	case "x-uds.spec.monitor":
-		return fmt.Sprintf("remove %q from x-uds.spec.monitor or mark the dependency as required so the service is packaged", service)
-	default:
-		return "update this x-uds setting to reference only packaged services"
 	}
 }
 
@@ -1409,7 +1384,7 @@ func normalizeTopLevelSecrets(raw types.Secrets) (map[string]model.Secret, map[s
 
 func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[string]string, error) {
 	configs := map[string]model.Config{}
-	aliases := map[string]string{}
+	candidates := make([]namedResourceAlias, 0, len(raw))
 	keys := make([]string, 0, len(raw))
 	for key := range raw {
 		keys = append(keys, key)
@@ -1424,14 +1399,12 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 		if _, exists := configs[normalized]; exists {
 			return nil, nil, fmt.Errorf("duplicate normalized top-level config name %q", normalized)
 		}
-		configs[normalized] = model.Config{
-			Name:         normalized,
-			ExternalName: strings.TrimSpace(value.Name),
-			External:     bool(value.External),
-			Content:      value.Content,
-		}
-		registerAlias(aliases, key, normalized)
-		registerAlias(aliases, normalized, normalized)
+		configs[normalized] = model.Config{Name: normalized, External: bool(value.External), Content: value.Content}
+		candidates = append(candidates, namedResourceAlias{Key: key, Normalized: normalized, PlatformName: value.Name})
+	}
+	aliases, err := buildNamedResourceAliases("config", candidates)
+	if err != nil {
+		return nil, nil, err
 	}
 	return configs, aliases, nil
 }

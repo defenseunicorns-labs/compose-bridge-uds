@@ -84,10 +84,9 @@ type Secret struct {
 }
 
 type Config struct {
-	Name         string
-	ExternalName string
-	External     bool
-	Content      string
+	Name     string
+	External bool
+	Content  string
 }
 
 type Dependency struct {

@@ -1,0 +1,62 @@
+name: Callable generated package test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@d6add59d4c2ca789ed7c92741e91bd340b4e950b # v1.0.2
+        with:
+          # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
+          version: v0.35.1
+
+      - name: Install Docker Compose
+        uses: docker/setup-compose-action@112d3e30db3bf437d207fea57f22510569d1ab97 # v2.0.0
+        with:
+          # renovate: datasource=github-tags depName=docker/compose versioning=semver
+          version: v5.5.0
+
+      - name: Free runner disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Install k3d
+        env:
+          # renovate: datasource=github-tags depName=k3d-io/k3d versioning=semver-coerced
+          K3D_VERSION: v5.9.0
+        run: curl --silent --show-error https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG="${K3D_VERSION}" bash
+
+      - name: Build, deploy, and test generated package
+        run: uds run test --no-progress
+
+      - name: Collect diagnostics
+        if: failure()
+        env:
+          LOG_DIR: ${{ runner.temp }}/generated-package-test
+        run: uds run test:debug --set LOG_DIR="${LOG_DIR}" --no-progress
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-package-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/generated-package-test
+          if-no-files-found: ignore
+          retention-days: 7

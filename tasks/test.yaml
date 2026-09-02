@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+
+variables:
+  - name: LOG_DIR
+    default: .test-artifacts
+
+tasks:
+  - name: all
+    actions:
+      - task: package-ready
+      - task: health-check
+      - task: database
+      - task: ingress
+
+  - name: package-ready
+    description: Verify the generated UDS package is ready
+    actions:
+      - wait:
+          cluster:
+            kind: Package
+            name: wordpress
+            namespace: wordpress
+            condition: Ready
+
+  - name: health-check
+    description: Verify the WordPress and MySQL deployments are available
+    actions:
+      - wait:
+          cluster:
+            kind: Deployment
+            name: db
+            namespace: wordpress
+            condition: Available
+      - wait:
+          cluster:
+            kind: Deployment
+            name: wordpress
+            namespace: wordpress
+            condition: Available
+
+  - name: database
+    description: Verify WordPress can connect to MySQL
+    actions:
+      - cmd: |
+          uds zarf tools kubectl exec deployment/wordpress --namespace wordpress -- php -r '
+            mysqli_report(MYSQLI_REPORT_OFF);
+            $password = trim(file_get_contents(getenv("WORDPRESS_DB_PASSWORD_FILE")));
+            $database = mysqli_init();
+            if (!$database->real_connect(
+              getenv("WORDPRESS_DB_HOST"),
+              getenv("WORDPRESS_DB_USER"),
+              $password,
+              getenv("WORDPRESS_DB_NAME")
+            )) {
+              fwrite(STDERR, "WordPress cannot connect to MySQL: ".mysqli_connect_error().PHP_EOL);
+              exit(1);
+            }
+            echo "WordPress connected to MySQL".PHP_EOL;
+          '
+
+  - name: ingress
+    description: Verify the tenant gateway routes unauthenticated traffic through generated SSO
+    actions:
+      - maxRetries: 30
+        cmd: |
+          result=$(curl --location --silent --show-error --output /dev/null --write-out '%{http_code} %{url_effective}' https://wordpress.uds.dev || true)
+          status=${result%% *}
+          effective_url=${result#* }
+          if [ "$status" != "200" ]; then
+            sleep 10
+            exit 1
+          fi
+          case "$effective_url" in
+            https://sso.uds.dev/*) ;;
+            *)
+              echo "expected the unauthenticated request to reach sso.uds.dev" >&2
+              exit 1
+              ;;
+          esac
+
+  - name: debug
+    description: Collect generated package and cluster diagnostics
+    actions:
+      - cmd: |
+          mkdir -p "${LOG_DIR}"
+          uds zarf tools kubectl get all --all-namespaces > "${LOG_DIR}/all-resources.txt" 2>&1 || true
+          uds zarf tools kubectl get package --all-namespaces -o yaml > "${LOG_DIR}/packages.yaml" 2>&1 || true
+          uds zarf tools kubectl get events --all-namespaces --sort-by='.lastTimestamp' > "${LOG_DIR}/events.txt" 2>&1 || true
+          uds zarf tools kubectl get pods,pvc,service --namespace wordpress -o yaml > "${LOG_DIR}/wordpress-resources.yaml" 2>&1 || true
+          uds zarf tools kubectl describe package/wordpress --namespace wordpress > "${LOG_DIR}/wordpress-package.txt" 2>&1 || true
+          uds zarf tools kubectl describe deployment/db deployment/wordpress --namespace wordpress > "${LOG_DIR}/wordpress-deployments.txt" 2>&1 || true
+          uds zarf tools kubectl logs deployment/db --namespace wordpress --all-containers > "${LOG_DIR}/db.log" 2>&1 || true
+          uds zarf tools kubectl logs deployment/wordpress --namespace wordpress --all-containers > "${LOG_DIR}/wordpress.log" 2>&1 || true
+          docker ps --filter name=k3d --format '{{.Names}}' | while read -r container_name; do
+            docker logs "$container_name" > "${LOG_DIR}/${container_name}.log" 2>&1 || true
+          done

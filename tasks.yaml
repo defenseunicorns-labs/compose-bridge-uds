@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+
+includes:
+  - test: ./tasks/test.yaml
+  - setup: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.0/tasks/setup.yaml
+
+variables:
+  - name: UDS_CORE_VERSION
+    # renovate: datasource=github-tags depName=defenseunicorns/uds-core versioning=semver
+    default: 1.11.1
+
+tasks:
+  - name: default
+    description: Build, deploy, and test the generated WordPress UDS package on k3d
+    actions:
+      - task: create-dev-package
+      - task: setup:k3d-test-cluster
+        with:
+          version: ${UDS_CORE_VERSION}
+      - task: deploy-test-package
+      - task: test:all
+
+  - name: create-dev-package
+    description: Generate and create the WordPress UDS package
+    actions:
+      - description: Build the local Compose Bridge transformation image
+        cmd: docker build --tag compose-bridge-uds:test .
+
+      - description: Generate the WordPress package through Docker Compose Bridge
+        cmd: rm -rf out && docker compose bridge convert --output out --transformation compose-bridge-uds:test
+        dir: examples/simple
+
+      - description: Read the generated package name
+        cmd: uds zarf tools yq '.metadata.name' examples/simple/out/zarf.yaml
+        setVariables:
+          - name: PACKAGE_NAME
+
+      - description: Read the generated package version
+        cmd: uds zarf tools yq '.metadata.version' examples/simple/out/zarf.yaml
+        setVariables:
+          - name: PACKAGE_VERSION
+
+      - description: Create the generated upstream Zarf package
+        cmd: uds zarf package create out --confirm --architecture="${UDS_ARCH}" --flavor upstream --features values=true --skip-sbom
+        dir: examples/simple
+
+  - name: deploy-test-package
+    description: Deploy the generated WordPress UDS package
+    actions:
+      - cmd: |
+          uds zarf package deploy \
+            "zarf-package-${PACKAGE_NAME}-${UDS_ARCH}-${PACKAGE_VERSION}-upstream.tar.zst" \
+            --confirm \
+            --features values=true \
+            --set "DB_PASSWORD=$(cat db_password.txt)"
+        dir: examples/simple
