@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,21 +20,31 @@ import (
 )
 
 func LoadCanonicalFile(path string) (model.App, error) {
+	conversion, err := ConvertCanonicalFile(path)
+	return conversion.App, err
+}
+
+func ConvertCanonicalFile(path string) (model.Conversion, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return model.App{}, fmt.Errorf("read canonical compose file: %w", err)
+		return rejectedConversion("compose", "read-error", fmt.Errorf("read canonical compose file: %w", err))
 	}
-	return loadCanonicalYAML(data, path)
+	return convertCanonicalYAML(data, path)
 }
 
 func LoadCanonicalYAML(data []byte) (model.App, error) {
-	return loadCanonicalYAML(data, "")
+	conversion, err := ConvertCanonicalYAML(data)
+	return conversion.App, err
 }
 
-func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
+func ConvertCanonicalYAML(data []byte) (model.Conversion, error) {
+	return convertCanonicalYAML(data, "")
+}
+
+func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, error) {
 	var raw map[string]any
 	if err := yamlv3.Unmarshal(data, &raw); err != nil {
-		return model.App{}, fmt.Errorf("decode canonical compose extensions: %w", err)
+		return rejectedConversion("compose", "decode-error", fmt.Errorf("decode canonical compose extensions: %w", err))
 	}
 	if raw == nil {
 		raw = map[string]any{}
@@ -64,14 +75,38 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 		},
 	)
 	if err != nil {
-		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
+		return rejectedConversion("compose", "decode-error", fmt.Errorf("decode canonical compose yaml: %w", err))
 	}
 	excludedServices := findExcludedServices(*project)
+	report := buildConversionReport(*project, raw, excludedServices)
 	if err := validateCompatibility(*project, raw, excludedServices); err != nil {
-		return model.App{}, err
+		var compatibilityErr *CompatibilityError
+		if errors.As(err, &compatibilityErr) {
+			for _, issue := range compatibilityErr.Issues {
+				report.Rejected = append(report.Rejected, model.ConversionDecision{
+					Path:        issue.Path,
+					Code:        issue.Code,
+					Message:     issue.Message,
+					Remediation: issue.Remediation,
+				})
+			}
+		}
+		sortConversionReport(&report)
+		return model.Conversion{Report: report}, err
 	}
 
-	return loadProject(*project, raw, excludedServices)
+	app, err := loadProject(*project, raw, excludedServices)
+	if err != nil {
+		report.Rejected = append(report.Rejected, model.ConversionDecision{
+			Path:    "compose",
+			Code:    "invalid-setting",
+			Message: err.Error(),
+		})
+		sortConversionReport(&report)
+		return model.Conversion{Report: report}, err
+	}
+	completeConversionReport(&report, *project, raw, app)
+	return model.Conversion{App: app, Report: report}, nil
 }
 
 // findExcludedServices identifies development-only dependencies. A service is

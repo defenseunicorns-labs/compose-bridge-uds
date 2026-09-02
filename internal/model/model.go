@@ -154,6 +154,27 @@ type App struct {
 	BuildSecrets map[string]any
 }
 
+type ConversionDecision struct {
+	Path        string `json:"path"`
+	Target      string `json:"target,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message"`
+	Remediation string `json:"remediation,omitempty"`
+}
+
+type ConversionReport struct {
+	Translated []ConversionDecision `json:"translated"`
+	Inferred   []ConversionDecision `json:"inferred"`
+	Ignored    []ConversionDecision `json:"ignored"`
+	Rejected   []ConversionDecision `json:"rejected"`
+}
+
+type Conversion struct {
+	App    App
+	Report ConversionReport
+}
+
 func (s Service) PrimaryPort() (Port, error) {
 	if len(s.Ports) == 0 {
 		return Port{}, fmt.Errorf("service %q has no declared ports", s.Name)

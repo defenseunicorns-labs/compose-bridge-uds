@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -17,14 +18,17 @@ func main() {
 	flag.StringVar(&output, "out", "/out", "Output directory for the generated UDS package")
 	flag.Parse()
 
-	app, err := compose.LoadCanonicalFile(input)
-	if err != nil {
+	if err := run(input, output); err != nil {
 		fail(err)
 	}
+}
 
-	if err := render.WritePackage(output, app); err != nil {
-		fail(err)
+func run(input, output string) error {
+	conversion, conversionErr := compose.ConvertCanonicalFile(input)
+	if conversionErr != nil {
+		return errors.Join(conversionErr, render.WriteConversionReport(output, conversion.Report))
 	}
+	return render.WriteConversion(output, conversion)
 }
 
 func fail(err error) {

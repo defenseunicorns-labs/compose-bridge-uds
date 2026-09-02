@@ -3,6 +3,7 @@ package render
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,6 +76,25 @@ const externalResourceHelpers = `{{- define "composeBridge.externalResourceName"
 `
 
 func WritePackage(root string, app model.App) error {
+	return writePackage(root, app, false)
+}
+
+func WriteConversion(root string, conversion model.Conversion) error {
+	if err := WriteConversionReport(root, conversion.Report); err != nil {
+		return err
+	}
+	if err := writePackage(root, conversion.App, true); err != nil {
+		conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
+			Path:    "package",
+			Code:    "package-generation",
+			Message: err.Error(),
+		})
+		return errors.Join(err, WriteConversionReport(root, conversion.Report))
+	}
+	return nil
+}
+
+func writePackage(root string, app model.App, includeConversionReport bool) error {
 	if err := validatePortNames(app.Services); err != nil {
 		return err
 	}
@@ -255,7 +275,7 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, configVariables, environmentVariables, images, flavor); err != nil {
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, configVariables, environmentVariables, images, flavor, includeConversionReport); err != nil {
 		return err
 	}
 
@@ -838,6 +858,7 @@ func writeZarfConfig(
 	environmentVariables map[string]map[string]string,
 	images []string,
 	flavor string,
+	includeConversionReport bool,
 ) error {
 	variables := []zarfVariable{
 		{
@@ -930,6 +951,9 @@ func writeZarfConfig(
 			"configuration": "docs/configuration.md",
 			"dependencies":  "docs/dependencies.md",
 		},
+	}
+	if includeConversionReport {
+		pkg.Documentation["conversion"] = "docs/conversion.md"
 	}
 
 	chart := zarfChart{
