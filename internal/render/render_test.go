@@ -3357,6 +3357,7 @@ services:
         condition: service_healthy
   database:
     image: postgres:17
+    expose: ["5432"]
 secrets:
   api_key:
     file: ./api_key.txt
@@ -4345,6 +4346,43 @@ services:
 	}
 	if got := expose["host"]; got != "custom-api" {
 		t.Fatalf("expose host = %#v, want custom-api", got)
+	}
+}
+
+func TestWritePackageExplicitEmptyNetworkExposeDisablesInference(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  spec:
+    network:
+      expose: []
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	network := mustMap(t, spec["network"])
+	if _, exists := network["expose"]; exists {
+		t.Fatalf("network expose = %#v, want omitted", network["expose"])
+	}
+	if _, exists := spec["sso"]; exists {
+		t.Fatalf("sso = %#v, want omitted without an exposure", spec["sso"])
 	}
 }
 

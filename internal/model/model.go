@@ -95,21 +95,22 @@ type Dependency struct {
 }
 
 type Package struct {
-	Name              string
-	Namespace         string
-	Group             string
-	UpstreamVersion   string
-	Version           string
-	VersionConfigured bool
-	Labels            map[string]string
-	Annotations       map[string]string
-	NetworkExpose     []any
-	MonitorConfigured bool
-	Monitor           []any
-	AdditionalAllow   []any
-	SSOConfigured     bool
-	SSO               []any
-	CABundle          map[string]any
+	Name                    string
+	Namespace               string
+	Group                   string
+	UpstreamVersion         string
+	Version                 string
+	VersionConfigured       bool
+	Labels                  map[string]string
+	Annotations             map[string]string
+	NetworkExposeConfigured bool
+	NetworkExpose           []any
+	MonitorConfigured       bool
+	Monitor                 []any
+	AdditionalAllow         []any
+	SSOConfigured           bool
+	SSO                     []any
+	CABundle                map[string]any
 }
 
 type BuildDefinition struct {
@@ -168,6 +169,37 @@ type ConversionReport struct {
 	Inferred   []ConversionDecision `json:"inferred"`
 	Ignored    []ConversionDecision `json:"ignored"`
 	Rejected   []ConversionDecision `json:"rejected"`
+}
+
+// RemoveConflictingTranslated removes translated decisions that overlap a
+// rejected setting at the same path or at a parent or child path.
+func (r *ConversionReport) RemoveConflictingTranslated(decisions []ConversionDecision) {
+	filtered := r.Translated[:0]
+	for _, translated := range r.Translated {
+		conflict := false
+		for _, decision := range decisions {
+			if decisionPathsOverlap(translated.Path, decision.Path) {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			filtered = append(filtered, translated)
+		}
+	}
+	r.Translated = filtered
+}
+
+func decisionPathsOverlap(left, right string) bool {
+	return left == right || decisionPathContains(left, right) || decisionPathContains(right, left)
+}
+
+func decisionPathContains(parent, child string) bool {
+	if !strings.HasPrefix(child, parent) || len(child) == len(parent) {
+		return false
+	}
+	separator := child[len(parent)]
+	return separator == '.' || separator == '['
 }
 
 type Conversion struct {

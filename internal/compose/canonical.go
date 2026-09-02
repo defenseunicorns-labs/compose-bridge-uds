@@ -93,7 +93,7 @@ func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, err
 					Remediation: issue.Remediation,
 				})
 			}
-			removeConflictingTranslatedDecisions(&report, decisions)
+			report.RemoveConflictingTranslated(decisions)
 			report.Rejected = append(report.Rejected, decisions...)
 		}
 		sortConversionReport(&report)
@@ -103,7 +103,7 @@ func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, err
 	app, err := loadProject(*project, raw, excludedServices)
 	if err != nil {
 		if decisions := loadProjectDecisions(err); len(decisions) > 0 {
-			removeConflictingTranslatedDecisions(&report, decisions)
+			report.RemoveConflictingTranslated(decisions)
 			report.Rejected = append(report.Rejected, decisions...)
 		} else {
 			report.Rejected = append(report.Rejected, model.ConversionDecision{
@@ -187,22 +187,6 @@ func remediationForInvalidSetting(path string) string {
 	default:
 		return "correct the invalid x-uds setting so it matches the expected Compose extension schema"
 	}
-}
-
-func removeConflictingTranslatedDecisions(report *model.ConversionReport, decisions []model.ConversionDecision) {
-	paths := make(map[string]struct{}, len(decisions))
-	for _, decision := range decisions {
-		paths[decision.Path] = struct{}{}
-	}
-
-	filtered := report.Translated[:0]
-	for _, decision := range report.Translated {
-		if _, conflict := paths[decision.Path]; conflict {
-			continue
-		}
-		filtered = append(filtered, decision)
-	}
-	report.Translated = filtered
 }
 
 // findExcludedServices identifies development-only dependencies. A service is
@@ -797,6 +781,7 @@ func parseSpecConfig(config *model.Package, spec map[string]any, path string) er
 			return fmt.Errorf("invalid %s.network: must be an object", path)
 		}
 		if rawExpose, exists := network["expose"]; exists {
+			config.NetworkExposeConfigured = true
 			expose, ok := asSlice(rawExpose)
 			if !ok {
 				return fmt.Errorf("invalid %s.network.expose: must be an array", path)

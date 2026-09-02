@@ -169,6 +169,85 @@ x-uds:
 	}
 }
 
+func TestRunWritesStructuredSourceDecisionsForRenderFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		wantPath string
+		wantCode string
+	}{
+		{
+			name: "duplicate port name",
+			input: `name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - name: web_api
+        target: 8080
+        published: "8080"
+      - name: web-api
+        target: 9090
+        published: "9090"
+`,
+			wantPath: "services.api.ports",
+			wantCode: "duplicate-port-name",
+		},
+		{
+			name: "invalid environment name preserves raw service path",
+			input: `name: demo
+services:
+  my_api:
+    image: ghcr.io/acme/api:1.2.3
+    environment:
+      DATABASE/URL: postgres://db
+`,
+			wantPath: "services.my_api.environment",
+			wantCode: "environment-name",
+		},
+		{
+			name: "generated variable collision",
+			input: `name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    environment:
+      CPU_LIMIT: custom
+`,
+			wantPath: "services.api.environment",
+			wantCode: "zarf-variable-conflict",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			inputPath := filepath.Join(dir, "compose.yaml")
+			outputPath := filepath.Join(dir, "out")
+			if err := os.WriteFile(inputPath, []byte(tt.input), 0o644); err != nil {
+				t.Fatalf("write Compose input: %v", err)
+			}
+
+			if err := run(inputPath, outputPath); err == nil {
+				t.Fatal("run() error = nil, want render validation error")
+			}
+			report := readConversionReport(t, filepath.Join(outputPath, "conversion.json"))
+			decision := findDecision(t, report.Rejected, tt.wantPath)
+			if decision.Code != tt.wantCode || decision.Remediation == "" {
+				t.Fatalf("rejected decision = %#v, want code %q with remediation", decision, tt.wantCode)
+			}
+			for _, translated := range report.Translated {
+				if translated.Path == tt.wantPath {
+					t.Fatalf("translated decisions unexpectedly include rejected path: %#v", report.Translated)
+				}
+			}
+		})
+	}
+}
+
 func readConversionReport(t *testing.T, path string) model.ConversionReport {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -190,4 +269,15 @@ func assertDecisionPath(t *testing.T, decisions []model.ConversionDecision, path
 		}
 	}
 	t.Fatalf("decision path %q not found in %#v", path, decisions)
+}
+
+func findDecision(t *testing.T, decisions []model.ConversionDecision, path string) model.ConversionDecision {
+	t.Helper()
+	for _, decision := range decisions {
+		if decision.Path == path {
+			return decision
+		}
+	}
+	t.Fatalf("decision path %q not found in %#v", path, decisions)
+	return model.ConversionDecision{}
 }

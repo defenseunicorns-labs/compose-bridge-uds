@@ -7,6 +7,7 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 
+	"defenseunicorns/uds-compose-bridge/internal/inference"
 	"defenseunicorns/uds-compose-bridge/internal/model"
 )
 
@@ -111,6 +112,15 @@ func buildConversionReport(project types.Project, raw map[string]any, excludedSe
 		for _, key := range keys {
 			path := servicePath + "." + key
 			switch key {
+			case "depends_on":
+				if hasPackagedDependency(service.DependsOn, excludedServices) {
+					report.Translated = append(report.Translated, translatedDecision(path, translatedServiceSettings[key]))
+				} else {
+					report.Ignored = append(report.Ignored, model.ConversionDecision{
+						Path:    path,
+						Message: "Every dependency references an excluded development-only service, so no init container is generated.",
+					})
+				}
 			case "container_name":
 				report.Ignored = append(report.Ignored, model.ConversionDecision{
 					Path:    path,
@@ -178,6 +188,15 @@ func buildConversionReport(project types.Project, raw map[string]any, excludedSe
 	}
 
 	return report
+}
+
+func hasPackagedDependency(dependencies types.DependsOnConfig, excludedServices map[string]struct{}) bool {
+	for name := range dependencies {
+		if _, excluded := excludedServices[name]; !excluded {
+			return true
+		}
+	}
+	return false
 }
 
 func translatedDecision(path, target string) model.ConversionDecision {
@@ -383,15 +402,11 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 		}
 	}
 
-	if len(app.Package.NetworkExpose) == 0 {
-		primaryExposedService := ""
+	if !app.Package.NetworkExposeConfigured {
 		for _, service := range app.Services {
 			for _, port := range service.Ports {
 				if !port.Published {
 					continue
-				}
-				if primaryExposedService == "" {
-					primaryExposedService = service.Name
 				}
 				report.Inferred = append(report.Inferred, model.ConversionDecision{
 					Path:    "x-uds.spec.network.expose",
@@ -401,11 +416,33 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 				break
 			}
 		}
-		if !app.Package.SSOConfigured && primaryExposedService != "" {
+	}
+	report.Inferred = append(report.Inferred, model.ConversionDecision{
+		Path:    "x-uds.spec.network.allow",
+		Value:   "ingress and egress",
+		Message: "Inferred package-local network allow rules for generated workloads.",
+	})
+
+	if !app.Package.SSOConfigured {
+		_, primaryExposedService := inference.PrimaryExposedService(app)
+		if primaryExposedService != "" {
 			report.Inferred = append(report.Inferred, model.ConversionDecision{
 				Path:    "x-uds.spec.sso",
 				Value:   primaryExposedService,
-				Message: "Inferred default SSO client configuration from the inferred service exposure.",
+				Message: "Inferred default SSO client configuration from the service exposure.",
+			})
+		}
+	}
+
+	if !app.Package.MonitorConfigured {
+		for _, service := range app.Services {
+			if len(inference.MetricsPorts(service)) == 0 {
+				continue
+			}
+			report.Inferred = append(report.Inferred, model.ConversionDecision{
+				Path:    "x-uds.spec.monitor",
+				Value:   service.Name,
+				Message: "Inferred ServiceMonitor configuration from the service's metrics ports.",
 			})
 		}
 	}

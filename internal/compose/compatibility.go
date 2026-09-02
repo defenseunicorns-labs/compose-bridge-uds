@@ -113,6 +113,22 @@ func validateCompatibility(project types.Project, raw map[string]any, excludedSe
 			}
 		}
 
+		for dependencyName := range service.DependsOn {
+			if _, excluded := excludedServices[dependencyName]; excluded {
+				continue
+			}
+			dependency, exists := project.Services[dependencyName]
+			if !exists || len(dependency.Ports) > 0 || len(dependency.Expose) > 0 {
+				continue
+			}
+			issues = append(issues, CompatibilityIssue{
+				Code:        "dependency-port",
+				Path:        path + ".depends_on." + dependencyName,
+				Message:     fmt.Sprintf("dependency %q has no declared service port for generated wait logic", dependencyName),
+				Remediation: fmt.Sprintf("declare ports or expose on service %q, or mark the dependency required: false", dependencyName),
+			})
+		}
+
 		for key := range rawService {
 			if strings.HasPrefix(key, "x-") {
 				continue

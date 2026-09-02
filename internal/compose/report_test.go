@@ -217,6 +217,177 @@ services:
 	}
 }
 
+func TestConvertCanonicalYAMLInfersMonitorFromMetricsPort(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - target: 9090
+        published: "9090"
+        name: metrics
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	monitor := requireDecision(t, conversion.Report.Inferred, "x-uds.spec.monitor")
+	if monitor.Value != "api" {
+		t.Fatalf("inferred monitor value = %q, want api", monitor.Value)
+	}
+}
+
+func TestConvertCanonicalYAMLExplicitExposeStillInfersSSO(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - target: 9090
+        published: "9090"
+        name: metrics
+x-uds:
+  spec:
+    network:
+      expose:
+        - service: api
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	sso := requireDecision(t, conversion.Report.Inferred, "x-uds.spec.sso")
+	if sso.Value != "api" {
+		t.Fatalf("inferred sso value = %q, want api", sso.Value)
+	}
+}
+
+func TestConvertCanonicalYAMLExplicitEmptyExposeDisablesInference(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    ports:
+      - "8080:8080"
+x-uds:
+  spec:
+    network:
+      expose: []
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Translated, "x-uds.spec.network.expose")
+	if hasDecision(conversion.Report.Inferred, "x-uds.spec.network.expose") {
+		t.Fatalf("inferred decisions unexpectedly include explicitly disabled exposure: %#v", conversion.Report.Inferred)
+	}
+	if hasDecision(conversion.Report.Inferred, "x-uds.spec.sso") {
+		t.Fatalf("inferred decisions unexpectedly include SSO without an exposure: %#v", conversion.Report.Inferred)
+	}
+}
+
+func TestConvertCanonicalYAMLReportsInferredNetworkAllow(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+x-uds:
+  spec:
+    network:
+      allow:
+        - direction: Egress
+          remoteNamespace: logging
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	requireDecision(t, conversion.Report.Inferred, "x-uds.spec.network.allow")
+	requireDecision(t, conversion.Report.Translated, "x-uds.spec.network.allow")
+}
+
+func TestConvertCanonicalYAMLDoesNotTranslateExcludedOptionalDependency(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    depends_on:
+      db:
+        condition: service_started
+        required: false
+  db:
+    image: docker.io/library/postgres:18
+    ports:
+      - "5432"
+`))
+	if err != nil {
+		t.Fatalf("ConvertCanonicalYAML() error = %v", err)
+	}
+
+	path := "services.api.depends_on"
+	if hasDecision(conversion.Report.Translated, path) {
+		t.Fatalf("translated decisions unexpectedly include excluded dependency: %#v", conversion.Report.Translated)
+	}
+	requireDecision(t, conversion.Report.Ignored, path)
+}
+
+func TestConvertCanonicalYAMLRejectsDependencyWithoutPort(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    depends_on:
+      - db
+  db:
+    image: docker.io/library/postgres:18
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want dependency port rejection")
+	}
+
+	requireDecision(t, conversion.Report.Rejected, "services.api.depends_on.db")
+	if hasDecision(conversion.Report.Translated, "services.api.depends_on") {
+		t.Fatalf("translated decisions unexpectedly include rejected dependency: %#v", conversion.Report.Translated)
+	}
+}
+
+func TestConvertCanonicalYAMLNestedRejectionRemovesParentTranslation(t *testing.T) {
+	t.Parallel()
+
+	conversion, err := ConvertCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+    networks:
+      custom:
+        aliases:
+          - backend
+networks:
+  custom: {}
+`))
+	if err == nil {
+		t.Fatal("ConvertCanonicalYAML() error = nil, want network options rejection")
+	}
+
+	requireDecision(t, conversion.Report.Rejected, "services.api.networks.custom")
+	if hasDecision(conversion.Report.Translated, "services.api.networks") {
+		t.Fatalf("translated decisions unexpectedly include rejected parent path: %#v", conversion.Report.Translated)
+	}
+}
+
 func hasDecision(decisions []model.ConversionDecision, path string) bool {
 	for _, decision := range decisions {
 		if decision.Path == path {
