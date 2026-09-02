@@ -1268,7 +1268,7 @@ func normalizeTopLevelSecrets(raw types.Secrets) (map[string]model.Secret, map[s
 
 func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[string]string, error) {
 	configs := map[string]model.Config{}
-	candidates := make([]namedResourceAlias, 0, len(raw))
+	aliases := map[string]string{}
 	keys := make([]string, 0, len(raw))
 	for key := range raw {
 		keys = append(keys, key)
@@ -1283,12 +1283,14 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 		if _, exists := configs[normalized]; exists {
 			return nil, nil, fmt.Errorf("duplicate normalized top-level config name %q", normalized)
 		}
-		configs[normalized] = model.Config{Name: normalized, External: bool(value.External), Content: value.Content}
-		candidates = append(candidates, namedResourceAlias{Key: key, Normalized: normalized, PlatformName: value.Name})
-	}
-	aliases, err := buildNamedResourceAliases("config", candidates)
-	if err != nil {
-		return nil, nil, err
+		configs[normalized] = model.Config{
+			Name:         normalized,
+			ExternalName: strings.TrimSpace(value.Name),
+			External:     bool(value.External),
+			Content:      value.Content,
+		}
+		registerAlias(aliases, key, normalized)
+		registerAlias(aliases, normalized, normalized)
 	}
 	return configs, aliases, nil
 }

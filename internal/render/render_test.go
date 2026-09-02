@@ -3731,7 +3731,7 @@ configs:
 	for _, want := range []string{
 		"externalConfigs:",
 		"OPERATOR_SETTINGS:",
-		"name: \"\"",
+		"name: operator-settings",
 		"key: operator-settings",
 	} {
 		if !strings.Contains(chartValues, want) {
@@ -3765,7 +3765,7 @@ configs:
 
 	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
 	for _, want := range []string{
-		"| `OPERATOR_SETTINGS_CONFIGMAP_NAME` | Kubernetes ConfigMap name for external Compose config operator-settings | — | false |",
+		"| `OPERATOR_SETTINGS_CONFIGMAP_NAME` | Kubernetes ConfigMap name for external Compose config operator-settings | operator-settings | false |",
 		"| `OPERATOR_SETTINGS_CONFIGMAP_KEY` | Key in the Kubernetes ConfigMap for external Compose config operator-settings | operator-settings | false |",
 	} {
 		if !strings.Contains(configuration, want) {
@@ -3785,6 +3785,87 @@ configs:
 		if !strings.Contains(deployment, want) {
 			t.Fatalf("expected custom external config file mount %q\n%s", want, deployment)
 		}
+	}
+}
+
+func TestWritePackageExternalConfigUsesDeclaredPlatformNameAsDefault(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    configs:
+      - source: settings
+        target: /etc/shop/settings.yaml
+configs:
+  settings:
+    external: true
+    name: shared-settings
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	t.Run("Helm chart default", func(t *testing.T) {
+		chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+		externalConfigs := mustMap(t, chartValues["externalConfigs"])
+		settings := mustMap(t, externalConfigs["SETTINGS"])
+		if got := settings["name"]; got != "shared-settings" {
+			t.Fatalf("externalConfigs.SETTINGS.name = %#v, want declared Compose platform name %q", got, "shared-settings")
+		}
+	})
+
+	t.Run("Zarf variable default", func(t *testing.T) {
+		zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+		for _, raw := range zarfConfig["variables"].([]any) {
+			variable := mustMap(t, raw)
+			if variable["name"] != "SETTINGS_CONFIGMAP_NAME" {
+				continue
+			}
+			if got := variable["default"]; got != "shared-settings" {
+				t.Fatalf("SETTINGS_CONFIGMAP_NAME default = %#v, want declared Compose platform name %q", got, "shared-settings")
+			}
+			return
+		}
+		t.Fatal("zarf.yaml does not declare SETTINGS_CONFIGMAP_NAME")
+	})
+}
+
+func TestLoadCanonicalAllowsConfigsSharingExternalPlatformName(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: shop
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    configs:
+      - source: api-settings
+        target: /etc/shop/settings.yaml
+configs:
+  api-settings:
+    external: true
+    name: shared-settings
+  worker-settings:
+    external: true
+    name: shared-settings
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("two logical configs may refer to the same external platform object: %v", err)
+	}
+	if _, exists := app.Configs["api-settings"]; !exists {
+		t.Fatalf("referenced logical config was not retained: %#v", app.Configs)
+	}
+	if _, exists := app.Configs["worker-settings"]; exists {
+		t.Fatalf("unreferenced logical config should be pruned: %#v", app.Configs)
 	}
 }
 
@@ -3909,7 +3990,7 @@ configs:
 	}
 }
 
-func TestLoadCanonicalConfigLogicalKeyPrecedesPlatformNameAlias(t *testing.T) {
+func TestLoadCanonicalConfigResolvesLogicalKeyIndependentlyOfPlatformName(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: shop
@@ -3942,7 +4023,7 @@ configs:
 			t.Fatalf("expected logical settings config to be retained on iteration %d: %#v", i, app.Configs)
 		}
 		if _, exists := app.Configs["actual"]; exists {
-			t.Fatalf("platform-name alias incorrectly retained actual config on iteration %d: %#v", i, app.Configs)
+			t.Fatalf("platform name incorrectly replaced logical reference on iteration %d: %#v", i, app.Configs)
 		}
 	}
 }
