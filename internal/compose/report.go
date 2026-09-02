@@ -32,6 +32,25 @@ var translatedServiceSettings = map[string]string{
 	"user":         "Deployment container security context",
 }
 
+var supportedUDSMetadataKeys = map[string]struct{}{
+	"name":        {},
+	"version":     {},
+	"labels":      {},
+	"annotations": {},
+}
+
+var supportedUDSSpecKeys = map[string]struct{}{
+	"network":  {},
+	"monitor":  {},
+	"sso":      {},
+	"caBundle": {},
+}
+
+var supportedUDSNetworkKeys = map[string]struct{}{
+	"expose": {},
+	"allow":  {},
+}
+
 func rejectedConversion(path, code string, err error) (model.Conversion, error) {
 	report := newConversionReport()
 	report.Rejected = append(report.Rejected, model.ConversionDecision{
@@ -53,12 +72,21 @@ func newConversionReport() model.ConversionReport {
 
 func buildConversionReport(project types.Project, raw map[string]any, excludedServices map[string]struct{}) model.ConversionReport {
 	report := newConversionReport()
+	uds, _ := asMap(raw["x-uds"])
+	metadata, _ := asMap(uds["metadata"])
 	if _, exists := raw["name"]; exists {
-		report.Translated = append(report.Translated, model.ConversionDecision{
-			Path:    "name",
-			Target:  "package metadata name",
-			Message: "Used the Compose project name as the generated package identity.",
-		})
+		if strings.TrimSpace(asString(metadata["name"])) != "" {
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    "name",
+				Message: "x-uds.metadata.name overrides the Compose project name for the generated package identity.",
+			})
+		} else {
+			report.Translated = append(report.Translated, model.ConversionDecision{
+				Path:    "name",
+				Target:  "package metadata name",
+				Message: "Used the Compose project name as the generated package identity.",
+			})
+		}
 	}
 
 	rawServices, _ := asMap(raw["services"])
@@ -110,6 +138,15 @@ func buildConversionReport(project types.Project, raw map[string]any, excludedSe
 					})
 				} else {
 					report.Translated = append(report.Translated, translatedDecision(path, "Deployment liveness probe"))
+				}
+			case "image":
+				if service.Build != nil {
+					report.Ignored = append(report.Ignored, model.ConversionDecision{
+						Path:    path,
+						Message: "Local build services use a generated internal image reference instead of the Compose image setting.",
+					})
+				} else {
+					report.Translated = append(report.Translated, translatedDecision(path, translatedServiceSettings[key]))
 				}
 			default:
 				if target, ok := translatedServiceSettings[key]; ok {
@@ -177,13 +214,45 @@ func addDeployDecisions(report *model.ConversionReport, path string, value any) 
 	for _, key := range sortedNames(deploy) {
 		settingPath := path + "." + key
 		if key == "resources" {
-			report.Translated = append(report.Translated, translatedDecision(settingPath, "Deployment resource requests and limits"))
+			addDeployResourceDecisions(report, settingPath, deploy[key])
 			continue
 		}
 		report.Ignored = append(report.Ignored, model.ConversionDecision{
 			Path:    settingPath,
 			Message: "Only deploy.resources is translated; Kubernetes and UDS control this deploy setting.",
 		})
+	}
+}
+
+func addDeployResourceDecisions(report *model.ConversionReport, path string, value any) {
+	resources, ok := asMap(value)
+	if !ok {
+		return
+	}
+	for _, key := range sortedNames(resources) {
+		settingPath := path + "." + key
+		if key != "limits" && key != "reservations" {
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    settingPath,
+				Message: "Only deploy.resources.limits and deploy.resources.reservations CPU and memory settings are translated.",
+			})
+			continue
+		}
+		resourceSet, ok := asMap(resources[key])
+		if !ok {
+			continue
+		}
+		for _, resourceKey := range sortedNames(resourceSet) {
+			resourcePath := settingPath + "." + resourceKey
+			if resourceKey == "cpus" || resourceKey == "memory" {
+				report.Translated = append(report.Translated, translatedDecision(resourcePath, "Deployment resource requests and limits"))
+				continue
+			}
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    resourcePath,
+				Message: "Only CPU and memory resource requests and limits are translated from deploy.resources.",
+			})
+		}
 	}
 }
 
@@ -232,7 +301,15 @@ func addUDSExtensionDecisions(report *model.ConversionReport, raw map[string]any
 	}
 	if metadata, ok := asMap(uds["metadata"]); ok {
 		for _, key := range sortedNames(metadata) {
-			report.Translated = append(report.Translated, translatedDecision("x-uds.metadata."+key, "package metadata"))
+			path := "x-uds.metadata." + key
+			if _, supported := supportedUDSMetadataKeys[key]; supported {
+				report.Translated = append(report.Translated, translatedDecision(path, "package metadata"))
+				continue
+			}
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    path,
+				Message: "This x-uds metadata field is not consumed by the package translator.",
+			})
 		}
 	}
 	if spec, ok := asMap(uds["spec"]); ok {
@@ -241,12 +318,27 @@ func addUDSExtensionDecisions(report *model.ConversionReport, raw map[string]any
 			if key == "network" {
 				if network, ok := asMap(spec[key]); ok {
 					for _, networkKey := range sortedNames(network) {
-						report.Translated = append(report.Translated, translatedDecision(path+"."+networkKey, "UDS Package custom resource"))
+						networkPath := path + "." + networkKey
+						if _, supported := supportedUDSNetworkKeys[networkKey]; supported {
+							report.Translated = append(report.Translated, translatedDecision(networkPath, "UDS Package custom resource"))
+							continue
+						}
+						report.Ignored = append(report.Ignored, model.ConversionDecision{
+							Path:    networkPath,
+							Message: "Only x-uds.spec.network.expose and x-uds.spec.network.allow are consumed by the package translator.",
+						})
 					}
 					continue
 				}
 			}
-			report.Translated = append(report.Translated, translatedDecision(path, "UDS Package custom resource"))
+			if _, supported := supportedUDSSpecKeys[key]; supported {
+				report.Translated = append(report.Translated, translatedDecision(path, "UDS Package custom resource"))
+				continue
+			}
+			report.Ignored = append(report.Ignored, model.ConversionDecision{
+				Path:    path,
+				Message: "This x-uds spec field is not consumed by the package translator.",
+			})
 		}
 	}
 }
@@ -272,15 +364,13 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 
 	rawServices, _ := asMap(raw["services"])
 	for _, service := range app.Services {
-		rawService := findRawService(rawServices, service.Name)
+		rawServiceName, _ := findRawService(rawServices, service.Name)
 		if service.Build != nil {
-			if strings.TrimSpace(asString(rawService["image"])) == "" {
-				report.Inferred = append(report.Inferred, model.ConversionDecision{
-					Path:    "services." + service.Name + ".image",
-					Value:   service.Image,
-					Message: "Generated an internal image reference for the local build.",
-				})
-			}
+			report.Inferred = append(report.Inferred, model.ConversionDecision{
+				Path:    "services." + rawServiceName + ".image",
+				Value:   service.Image,
+				Message: "Generated an internal image reference for the local build.",
+			})
 		}
 	}
 
@@ -303,16 +393,16 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 	sortConversionReport(report)
 }
 
-func findRawService(rawServices map[string]any, normalizedName string) map[string]any {
+func findRawService(rawServices map[string]any, normalizedName string) (string, map[string]any) {
 	for name, value := range rawServices {
 		normalized, err := normalizeName(name)
 		if err != nil || normalized != normalizedName {
 			continue
 		}
 		service, _ := asMap(value)
-		return service
+		return name, service
 	}
-	return nil
+	return normalizedName, nil
 }
 
 func addResourceDecisions(report *model.ConversionReport, project types.Project, app model.App) {

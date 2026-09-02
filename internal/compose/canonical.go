@@ -19,6 +19,8 @@ import (
 	"defenseunicorns/uds-compose-bridge/internal/model"
 )
 
+var invalidSettingPattern = regexp.MustCompile(`^invalid ([^:]+): (.+)$`)
+
 func LoadCanonicalFile(path string) (model.App, error) {
 	conversion, err := ConvertCanonicalFile(path)
 	return conversion.App, err
@@ -97,16 +99,107 @@ func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, err
 
 	app, err := loadProject(*project, raw, excludedServices)
 	if err != nil {
-		report.Rejected = append(report.Rejected, model.ConversionDecision{
-			Path:    "compose",
-			Code:    "invalid-setting",
-			Message: err.Error(),
-		})
+		if decisions := loadProjectDecisions(err); len(decisions) > 0 {
+			removeConflictingTranslatedDecisions(&report, decisions)
+			report.Rejected = append(report.Rejected, decisions...)
+		} else {
+			report.Rejected = append(report.Rejected, model.ConversionDecision{
+				Path:    "compose",
+				Code:    "invalid-setting",
+				Message: err.Error(),
+			})
+		}
 		sortConversionReport(&report)
 		return model.Conversion{Report: report}, err
 	}
 	completeConversionReport(&report, *project, raw, app)
 	return model.Conversion{App: app, Report: report}, nil
+}
+
+func loadProjectDecisions(err error) []model.ConversionDecision {
+	message := err.Error()
+	if strings.HasPrefix(message, "unsupported fields:\n  - ") {
+		rawPaths := strings.Split(strings.TrimPrefix(message, "unsupported fields:\n  - "), "\n  - ")
+		decisions := make([]model.ConversionDecision, 0, len(rawPaths))
+		for _, rawPath := range rawPaths {
+			path, remediation := parseUnsupportedField(rawPath)
+			decisions = append(decisions, model.ConversionDecision{
+				Path:        path,
+				Code:        "unsupported-field",
+				Message:     "This x-uds field is not supported by the package translator.",
+				Remediation: remediation,
+			})
+		}
+		return decisions
+	}
+
+	matches := invalidSettingPattern.FindStringSubmatch(message)
+	if len(matches) != 3 {
+		return nil
+	}
+	path := matches[1]
+	return []model.ConversionDecision{{
+		Path:        path,
+		Code:        "invalid-setting",
+		Message:     matches[2],
+		Remediation: remediationForInvalidSetting(path),
+	}}
+}
+
+func parseUnsupportedField(rawPath string) (string, string) {
+	rawPath = strings.TrimSpace(rawPath)
+	parts := strings.SplitN(rawPath, " (", 2)
+	path := strings.TrimSpace(parts[0])
+	if len(parts) == 1 {
+		return path, "remove this field or replace it with a supported x-uds.metadata or x-uds.spec setting"
+	}
+	remediation := strings.TrimSuffix(parts[1], ")")
+	return path, remediation
+}
+
+func remediationForInvalidSetting(path string) string {
+	switch {
+	case path == "x-uds.metadata":
+		return "set x-uds.metadata to an object containing supported fields: name, version, labels, and annotations"
+	case path == "x-uds.metadata.name":
+		return "set x-uds.metadata.name to a lowercase DNS-1123-compatible value"
+	case path == "x-uds.metadata.version":
+		return "set x-uds.metadata.version to a non-empty version string such as 1.2.3 or 1.2.3-uds.0"
+	case strings.HasPrefix(path, "x-uds.metadata.labels"), strings.HasPrefix(path, "x-uds.metadata.annotations"):
+		return "set this metadata field to an object whose values are strings"
+	case path == "x-uds.spec":
+		return "set x-uds.spec to an object containing supported fields: network, monitor, sso, and caBundle"
+	case path == "x-uds.spec.network":
+		return "set x-uds.spec.network to an object containing expose and allow arrays"
+	case path == "x-uds.spec.network.expose", path == "x-uds.spec.network.allow", path == "x-uds.spec.monitor", path == "x-uds.spec.sso":
+		return "set this field to an array"
+	case path == "x-uds.spec.caBundle":
+		return "set x-uds.spec.caBundle to an object containing configMap"
+	case path == "x-uds.spec.caBundle.configMap":
+		return "set x-uds.spec.caBundle.configMap to an object containing name, key, labels, and annotations"
+	case strings.HasPrefix(path, "x-uds.spec.caBundle.configMap.labels"), strings.HasPrefix(path, "x-uds.spec.caBundle.configMap.annotations"):
+		return "set this configMap metadata field to an object whose values are strings"
+	case path == "x-uds.spec.caBundle.configMap.name", path == "x-uds.spec.caBundle.configMap.key":
+		return "set this field to a non-empty string"
+	default:
+		return "correct the invalid x-uds setting so it matches the expected Compose extension schema"
+	}
+}
+
+func removeConflictingTranslatedDecisions(report *model.ConversionReport, decisions []model.ConversionDecision) {
+	paths := make(map[string]struct{}, len(decisions))
+	for _, decision := range decisions {
+		paths[decision.Path] = struct{}{}
+	}
+
+	filtered := report.Translated[:0]
+	for _, decision := range report.Translated {
+		if _, conflict := paths[decision.Path]; conflict {
+			continue
+		}
+		filtered = append(filtered, decision)
+	}
+	report.Translated = filtered
 }
 
 // findExcludedServices identifies development-only dependencies. A service is
