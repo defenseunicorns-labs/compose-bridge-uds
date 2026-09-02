@@ -3,6 +3,7 @@ package render
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"defenseunicorns/uds-compose-bridge/internal/inference"
 	"defenseunicorns/uds-compose-bridge/internal/model"
 )
 
@@ -75,6 +77,121 @@ const externalResourceHelpers = `{{- define "composeBridge.externalResourceName"
 `
 
 func WritePackage(root string, app model.App) error {
+	return writePackage(root, app, false)
+}
+
+func WriteConversion(root string, conversion model.Conversion) error {
+	if err := WriteConversionReport(root, conversion.Report); err != nil {
+		return err
+	}
+	if err := writePackage(root, conversion.App, true); err != nil {
+		if decisions := renderFailureDecisions(err, conversion.Report); len(decisions) > 0 {
+			conversion.Report.RemoveConflictingTranslated(decisions)
+			conversion.Report.Rejected = append(conversion.Report.Rejected, decisions...)
+		} else {
+			conversion.Report.Rejected = append(conversion.Report.Rejected, model.ConversionDecision{
+				Path:        "package",
+				Code:        "package-generation",
+				Message:     err.Error(),
+				Remediation: "address the reported package-generation error and rerun conversion",
+			})
+		}
+		return errors.Join(err, WriteConversionReport(root, conversion.Report))
+	}
+	return nil
+}
+
+var monitorRenderFailurePattern = regexp.MustCompile(`^x-uds\.spec\.monitor(?:\b| )`)
+
+type settingError struct {
+	path        string
+	code        string
+	message     string
+	remediation string
+}
+
+func (e *settingError) Error() string {
+	return e.message
+}
+
+func renderFailureDecisions(err error, report model.ConversionReport) []model.ConversionDecision {
+	message := err.Error()
+	var sourceErr *settingError
+	if errors.As(err, &sourceErr) {
+		return []model.ConversionDecision{{
+			Path:        reportedSourcePath(report, sourceErr.path),
+			Code:        sourceErr.code,
+			Message:     sourceErr.message,
+			Remediation: sourceErr.remediation,
+		}}
+	}
+	if monitorRenderFailurePattern.MatchString(message) {
+		return []model.ConversionDecision{{
+			Path:        "x-uds.spec.monitor",
+			Code:        "invalid-setting",
+			Message:     message,
+			Remediation: "ensure each monitor entry references a Compose service and valid service port settings",
+		}}
+	}
+	return nil
+}
+
+func reportedSourcePath(report model.ConversionReport, path string) string {
+	for _, decision := range report.Translated {
+		if decision.Path == path || equivalentServiceSettingPath(decision.Path, path) || equivalentResourcePath(decision.Path, path) {
+			return decision.Path
+		}
+		if servicePath, ok := equivalentServicePath(decision.Path, path); ok {
+			return servicePath
+		}
+	}
+	return path
+}
+
+func equivalentServicePath(decisionPath, sourcePath string) (string, bool) {
+	const prefix = "services."
+	if !strings.HasPrefix(decisionPath, prefix) || !strings.HasPrefix(sourcePath, prefix) {
+		return "", false
+	}
+	decisionEnd := strings.LastIndex(decisionPath, ".")
+	if decisionEnd <= len(prefix) {
+		return "", false
+	}
+	rawServiceName := decisionPath[len(prefix):decisionEnd]
+	sourceServiceName := strings.TrimPrefix(sourcePath, prefix)
+	if normalizedSourceName(rawServiceName) != normalizedSourceName(sourceServiceName) {
+		return "", false
+	}
+	return prefix + rawServiceName, true
+}
+
+func equivalentServiceSettingPath(left, right string) bool {
+	const prefix = "services."
+	if !strings.HasPrefix(left, prefix) || !strings.HasPrefix(right, prefix) {
+		return false
+	}
+	leftEnd := strings.LastIndex(left, ".")
+	rightEnd := strings.LastIndex(right, ".")
+	if leftEnd <= len(prefix) || rightEnd <= len(prefix) || left[leftEnd:] != right[rightEnd:] {
+		return false
+	}
+	return normalizedSourceName(left[len(prefix):leftEnd]) == normalizedSourceName(right[len(prefix):rightEnd])
+}
+
+func equivalentResourcePath(left, right string) bool {
+	for _, prefix := range []string{"configs.", "secrets.", "volumes."} {
+		if strings.HasPrefix(left, prefix) && strings.HasPrefix(right, prefix) {
+			return normalizedSourceName(strings.TrimPrefix(left, prefix)) == normalizedSourceName(strings.TrimPrefix(right, prefix))
+		}
+	}
+	return false
+}
+
+func normalizedSourceName(value string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), "_", "-")
+}
+
+func writePackage(root string, app model.App, includeConversionReport bool) error {
 	if err := validatePortNames(app.Services); err != nil {
 		return err
 	}
@@ -100,8 +217,8 @@ func WritePackage(root string, app model.App) error {
 	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
-		if len(svc.Ports) > 0 {
-			servicePorts[svc.Name] = svc.Ports[0].Number
+		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
+			servicePorts[svc.Name] = port
 		}
 	}
 
@@ -255,7 +372,7 @@ func WritePackage(root string, app model.App) error {
 		return err
 	}
 
-	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, configVariables, environmentVariables, images, flavor); err != nil {
+	if err := writeZarfConfig(filepath.Join(root, "zarf.yaml"), app, secretVariables, configVariables, environmentVariables, images, flavor, includeConversionReport); err != nil {
 		return err
 	}
 
@@ -841,6 +958,7 @@ func writeZarfConfig(
 	environmentVariables map[string]map[string]string,
 	images []string,
 	flavor string,
+	includeConversionReport bool,
 ) error {
 	variables := []zarfVariable{
 		{
@@ -934,6 +1052,9 @@ func writeZarfConfig(
 			"configuration": "docs/configuration.md",
 			"dependencies":  "docs/dependencies.md",
 		},
+	}
+	if includeConversionReport {
+		pkg.Documentation["conversion"] = "docs/conversion.md"
 	}
 
 	chart := zarfChart{
@@ -1133,7 +1254,7 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 
 	// --- Expose rules ---
 	var expose []any
-	if len(app.Package.NetworkExpose) > 0 {
+	if app.Package.NetworkExposeConfigured {
 		expose = enrichNetworkExposes(app)
 	} else {
 		expose = buildAutoExposes(app)
@@ -1369,20 +1490,10 @@ func buildMonitor(app model.App) ([]any, error) {
 	return enriched, nil
 }
 
-var wellKnownMetricsPorts = map[int]struct{}{
-	9090: {}, // Prometheus
-	9100: {}, // Prometheus Node Exporter
-	9115: {}, // Prometheus Blackbox Exporter
-	9121: {}, // Prometheus Redis Exporter
-	9153: {}, // CoreDNS metrics
-	9187: {}, // Prometheus PostgreSQL Exporter
-	9256: {}, // Prometheus Process Exporter
-}
-
 func buildInferredMonitors(app model.App) []any {
 	var monitors []any
 	for _, svc := range app.Services {
-		metricsPorts := inferredMetricsPorts(svc)
+		metricsPorts := inference.MetricsPorts(svc)
 		for _, port := range metricsPorts {
 			selector := serviceSelector(svc.Name)
 			monitors = append(monitors, map[string]any{
@@ -1397,48 +1508,6 @@ func buildInferredMonitors(app model.App) []any {
 		}
 	}
 	return monitors
-}
-
-func inferredMetricsPorts(svc model.Service) []model.Port {
-	environmentPorts := metricsEnvironmentPorts(svc.Env)
-	ports := make([]model.Port, 0, len(svc.Ports))
-	for _, port := range svc.Ports {
-		if !strings.EqualFold(port.Protocol, "TCP") {
-			continue
-		}
-		_, wellKnown := wellKnownMetricsPorts[port.Number]
-		_, configuredByEnvironment := environmentPorts[port.Number]
-		if isMetricsPortName(port.Name) || wellKnown || configuredByEnvironment {
-			ports = append(ports, port)
-		}
-	}
-	return ports
-}
-
-func isMetricsPortName(name string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(name))
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	for _, token := range strings.Split(normalized, "-") {
-		if token == "metrics" || token == "prometheus" {
-			return true
-		}
-	}
-	return false
-}
-
-func metricsEnvironmentPorts(environment []model.EnvVar) map[int]struct{} {
-	ports := map[int]struct{}{}
-	for _, item := range environment {
-		name := strings.ToUpper(strings.TrimSpace(item.Name))
-		if name != "METRICS_PORT" && name != "PROMETHEUS_PORT" {
-			continue
-		}
-		port, err := strconv.Atoi(strings.TrimSpace(item.Value))
-		if err == nil && port > 0 && port <= 65535 {
-			ports[port] = struct{}{}
-		}
-	}
-	return ports
 }
 
 func enrichMonitorPortFields(entry map[string]any, svc model.Service) error {
@@ -1596,7 +1665,7 @@ func lookupRawInt(values map[string]any, key string) (int, bool) {
 
 // buildInferredSSO generates a default SSO client from the app's expose rules.
 func buildInferredSSO(app model.App) []any {
-	host, service := findPrimaryExposedService(app)
+	host, service := inference.PrimaryExposedService(app)
 	if host == "" {
 		return nil
 	}
@@ -1616,7 +1685,7 @@ func buildInferredSSO(app model.App) []any {
 
 // enrichSSOEntries fills in missing fields on user-provided x-uds.spec.sso entries.
 func enrichSSOEntries(app model.App) []any {
-	host, service := findPrimaryExposedService(app)
+	host, service := inference.PrimaryExposedService(app)
 	enriched := make([]any, 0, len(app.Package.SSO))
 
 	for _, raw := range app.Package.SSO {
@@ -1658,28 +1727,6 @@ func inferredRedirectURI(host string) string {
 	return fmt.Sprintf("https://%s.%s/*", host, helmDomainValue)
 }
 
-// findPrimaryExposedService determines the primary host and service name from expose rules.
-func findPrimaryExposedService(app model.App) (host string, service string) {
-	if len(app.Package.NetworkExpose) > 0 {
-		for _, raw := range app.Package.NetworkExpose {
-			if item, ok := raw.(map[string]any); ok {
-				h, _ := item["host"].(string)
-				s, _ := item["service"].(string)
-				if h == "" {
-					h = s
-				}
-				return h, s
-			}
-		}
-	}
-	for _, svc := range app.Services {
-		if _, ok := primaryPublishedPort(svc.Ports); ok {
-			return svc.Name, svc.Name
-		}
-	}
-	return "", ""
-}
-
 // titleCase converts a hyphenated name to Title Case (e.g. "hello-world" → "Hello World").
 func titleCase(name string) string {
 	words := strings.Split(name, "-")
@@ -1693,6 +1740,18 @@ func titleCase(name string) string {
 
 func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
 	return primaryGatewayPort(ports, true)
+}
+
+func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
+	for _, port := range ports {
+		if port.Number <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
+			return port.Number, true
+		}
+	}
+	return 0, false
 }
 
 func primaryGatewayPort(ports []model.Port, requirePublished bool) (model.Port, bool) {
@@ -2085,14 +2144,18 @@ func buildEnvironmentVariables(
 	secretVariables map[string]secretVariableNames,
 	configVariables map[string]configVariableNames,
 ) (map[string]map[string]string, error) {
-	usedVariables := map[string]string{
-		additionalNetworkAllowVariable: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable),
-		domainVariable:                 fmt.Sprintf("automatic package variable %q", domainVariable),
+	usedVariables := map[string]variableOwner{
+		additionalNetworkAllowVariable: {description: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable), path: "package"},
+		domainVariable:                 {description: fmt.Sprintf("automatic package variable %q", domainVariable), path: "package"},
 	}
 	for _, svc := range app.Services {
 		resourceVariables := buildResourceVariableNames(svc.Name)
 		for _, name := range resourceVariables.all() {
-			if err := registerZarfVariable(usedVariables, name, fmt.Sprintf("automatic resource variable for service %q", svc.Name)); err != nil {
+			owner := variableOwner{
+				description: fmt.Sprintf("automatic resource variable for service %q", svc.Name),
+				path:        "services." + svc.Name,
+			}
+			if err := registerZarfVariable(usedVariables, name, owner); err != nil {
 				return nil, err
 			}
 		}
@@ -2106,7 +2169,7 @@ func buildEnvironmentVariables(
 			if err := registerZarfVariable(
 				usedVariables,
 				name,
-				fmt.Sprintf("compose secret %q", secretName),
+				variableOwner{description: fmt.Sprintf("compose secret %q", secretName), path: "secrets." + secretName},
 			); err != nil {
 				return nil, err
 			}
@@ -2122,7 +2185,7 @@ func buildEnvironmentVariables(
 			if err := registerZarfVariable(
 				usedVariables,
 				name,
-				fmt.Sprintf("compose config %q", configName),
+				variableOwner{description: fmt.Sprintf("compose config %q", configName), path: "configs." + configName},
 			); err != nil {
 				return nil, err
 			}
@@ -2144,26 +2207,35 @@ func buildEnvironmentVariables(
 		}
 		configMapName := environmentConfigMapName(svc.Name)
 		if composeConfig, exists := renderedConfigMaps[configMapName]; exists {
-			return nil, fmt.Errorf(
-				"environment ConfigMap %q for service %q conflicts with compose config %q",
-				configMapName,
-				svc.Name,
-				composeConfig,
-			)
+			message := fmt.Sprintf("environment ConfigMap %q for service %q conflicts with compose config %q", configMapName, svc.Name, composeConfig)
+			return nil, &settingError{
+				path:        "services." + svc.Name + ".environment",
+				code:        "environment-configmap-conflict",
+				message:     message,
+				remediation: "rename the Compose config or service so their generated ConfigMap names are distinct",
+			}
 		}
 
 		serviceVariables := map[string]string{}
 		for _, item := range svc.Env {
 			if !kubernetesEnvironmentName.MatchString(item.Name) {
-				return nil, fmt.Errorf(
-					"invalid environment variable %q on service %q: names used with generated envFrom ConfigMaps must match %s",
+				message := fmt.Sprintf("invalid environment variable %q on service %q: names used with generated envFrom ConfigMaps must match %s",
 					item.Name,
 					svc.Name,
 					kubernetesEnvironmentName.String(),
 				)
+				return nil, &settingError{
+					path:        "services." + svc.Name + ".environment",
+					code:        "environment-name",
+					message:     message,
+					remediation: "rename the environment variable to a valid Kubernetes environment name",
+				}
 			}
 			variableName := normalizeZarfVariableName(svc.Name + "_" + item.Name)
-			owner := fmt.Sprintf("environment variable %q on service %q", item.Name, svc.Name)
+			owner := variableOwner{
+				description: fmt.Sprintf("environment variable %q on service %q", item.Name, svc.Name),
+				path:        "services." + svc.Name + ".environment",
+			}
 			if err := registerZarfVariable(usedVariables, variableName, owner); err != nil {
 				return nil, err
 			}
@@ -2174,22 +2246,39 @@ func buildEnvironmentVariables(
 	return out, nil
 }
 
-func registerZarfVariable(used map[string]string, name, owner string) error {
+type variableOwner struct {
+	description string
+	path        string
+}
+
+func registerZarfVariable(used map[string]variableOwner, name string, owner variableOwner) error {
 	if !validZarfVariableName.MatchString(name) {
-		return fmt.Errorf(
+		message := fmt.Sprintf(
 			"%s generates invalid Zarf variable %q: names must match %s",
-			owner,
+			owner.description,
 			name,
 			validZarfVariableName.String(),
 		)
+		return &settingError{
+			path:        owner.path,
+			code:        "zarf-variable-name",
+			message:     message,
+			remediation: "rename the source setting so it generates a valid and unique Zarf variable name",
+		}
 	}
 	if existing, exists := used[name]; exists {
-		return fmt.Errorf(
+		message := fmt.Sprintf(
 			"%s generates Zarf variable %q, which conflicts with %s",
-			owner,
+			owner.description,
 			name,
-			existing,
+			existing.description,
 		)
+		return &settingError{
+			path:        owner.path,
+			code:        "zarf-variable-conflict",
+			message:     message,
+			remediation: "rename the source setting so generated Zarf variable names are unique",
+		}
 	}
 	used[name] = owner
 	return nil
@@ -2317,13 +2406,19 @@ func validatePortNames(services []model.Service) error {
 		for _, port := range svc.Ports {
 			name := buildPortName(port)
 			if previous, exists := seen[name]; exists {
-				return fmt.Errorf(
+				message := fmt.Sprintf(
 					"service %q ports %s and %s resolve to duplicate Kubernetes port name %q",
 					svc.Name,
 					formatPortNameSource(previous),
 					formatPortNameSource(port),
 					name,
 				)
+				return &settingError{
+					path:        "services." + svc.Name + ".ports",
+					code:        "duplicate-port-name",
+					message:     message,
+					remediation: "set distinct Compose port names that remain unique after Kubernetes normalization",
+				}
 			}
 			seen[name] = port
 		}

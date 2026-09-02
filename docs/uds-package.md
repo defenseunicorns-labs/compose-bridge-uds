@@ -33,7 +33,7 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 | `x-uds.metadata.version` | Package version override. A semantic upstream version receives `-uds.0`; an existing `<upstream>-uds.<sub-version>` value is preserved. |
 | `x-uds.metadata.labels` | Labels applied to generated UDS Package metadata. |
 | `x-uds.metadata.annotations` | Annotations applied to generated UDS Package metadata and Zarf package metadata. |
-| `x-uds.spec.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service. |
+| `x-uds.spec.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service; set an empty list to disable exposure. |
 | `x-uds.spec.network.allow[]` | Add network allow rules, deduplicated against inferred rules. |
 | `x-uds.spec.monitor[]` | Add Prometheus monitoring rules, with service metadata inferred when possible. |
 | `x-uds.spec.sso[]` | Replace inferred SSO clients. Set `x-uds.spec.sso: []` to disable inferred SSO. |

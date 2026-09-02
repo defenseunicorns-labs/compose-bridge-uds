@@ -30,17 +30,21 @@ zarf package create out/ --flavor upstream
 zarf package deploy zarf-package-wordpress-*.tar.zst
 ```
 
-The transformation writes a Helm chart to `out/chart/`, a Zarf package definition to `out/zarf.yaml`, and deploy-time configuration to `out/values/`. Services with `build:` are built during `zarf package create` through a generated Buildx Bake definition. See [Compose support](docs/compose-support.md#local-dockerfile-builds) for Docker Compose version-specific conversion steps.
+The transformation writes these artifacts to `out/`:
 
-Mark a local-development dependency with long-syntax `depends_on` and
-`required: false` to keep it available to `docker compose up` while omitting it
-and its exclusive resources from the generated package.
+| Path | Purpose |
+| --- | --- |
+| `chart/` | Generated application Helm chart. |
+| `docs/` | Generated package documentation, including a human-readable `conversion.md` report. |
+| `values/` | Generated Helm values consumed during package deployment. |
+| `conversion.json` | Machine-readable conversion report for automation. |
+| `zarf.yaml` | Package metadata, components, images, variables, and documentation. |
 
 ## Documentation
 
 > [!TIP]
 > **Is Compose Bridge a good fit for your application?** Use the [Awesome Compose compatibility matrix](docs/awesome-compose-compatibility-matrix.md) as a practical benchmark. If your application depends on unsupported Compose features or needs deeper package customization, start with the [UDS reference package](https://github.com/uds-packages/reference-package) and build the package directly.
 
-- [Compose support](docs/compose-support.md) describes supported configuration, known limitations, and local Dockerfile builds.
+- [Compose support](docs/compose-support.md) describes supported configuration, known limitations, development-service exclusions, and local Dockerfile builds.
 - [UDS package generation](docs/uds-package.md) describes generated resources, `x-uds` extensions, secrets, and policy exemptions.
 - [`examples/full/compose.yaml`](examples/full/compose.yaml) demonstrates the complete supported configuration.

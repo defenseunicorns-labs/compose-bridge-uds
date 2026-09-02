@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,22 +19,35 @@ import (
 	"defenseunicorns/uds-compose-bridge/internal/model"
 )
 
+var invalidSettingPattern = regexp.MustCompile(`^invalid ([^:]+): (.+)$`)
+var excludedServiceReferencePattern = regexp.MustCompile(`^(x-uds\.spec\.(?:network\.expose|monitor)) references excluded service "([^"]+)"$`)
+
 func LoadCanonicalFile(path string) (model.App, error) {
+	conversion, err := ConvertCanonicalFile(path)
+	return conversion.App, err
+}
+
+func ConvertCanonicalFile(path string) (model.Conversion, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return model.App{}, fmt.Errorf("read canonical compose file: %w", err)
+		return rejectedConversion("compose", "read-error", fmt.Errorf("read canonical compose file: %w", err))
 	}
-	return loadCanonicalYAML(data, path)
+	return convertCanonicalYAML(data, path)
 }
 
 func LoadCanonicalYAML(data []byte) (model.App, error) {
-	return loadCanonicalYAML(data, "")
+	conversion, err := ConvertCanonicalYAML(data)
+	return conversion.App, err
 }
 
-func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
+func ConvertCanonicalYAML(data []byte) (model.Conversion, error) {
+	return convertCanonicalYAML(data, "")
+}
+
+func convertCanonicalYAML(data []byte, sourcePath string) (model.Conversion, error) {
 	var raw map[string]any
 	if err := yamlv3.Unmarshal(data, &raw); err != nil {
-		return model.App{}, fmt.Errorf("decode canonical compose extensions: %w", err)
+		return rejectedConversion("compose", "decode-error", fmt.Errorf("decode canonical compose extensions: %w", err))
 	}
 	if raw == nil {
 		raw = map[string]any{}
@@ -64,14 +78,140 @@ func loadCanonicalYAML(data []byte, sourcePath string) (model.App, error) {
 		},
 	)
 	if err != nil {
-		return model.App{}, fmt.Errorf("decode canonical compose yaml: %w", err)
+		return rejectedConversion("compose", "decode-error", fmt.Errorf("decode canonical compose yaml: %w", err))
 	}
 	excludedServices := findExcludedServices(*project)
+	report := buildConversionReport(*project, raw, excludedServices)
 	if err := validateCompatibility(*project, raw, excludedServices); err != nil {
-		return model.App{}, err
+		var compatibilityErr *CompatibilityError
+		if errors.As(err, &compatibilityErr) {
+			decisions := make([]model.ConversionDecision, 0, len(compatibilityErr.Issues))
+			for _, issue := range compatibilityErr.Issues {
+				decisions = append(decisions, model.ConversionDecision{
+					Path:        issue.Path,
+					Code:        issue.Code,
+					Message:     issue.Message,
+					Remediation: issue.Remediation,
+				})
+			}
+			report.RemoveConflictingTranslated(decisions)
+			report.Rejected = append(report.Rejected, decisions...)
+		}
+		sortConversionReport(&report)
+		return model.Conversion{Report: report}, err
 	}
 
-	return loadProject(*project, raw, excludedServices)
+	app, err := loadProject(*project, raw, excludedServices)
+	if err != nil {
+		if decisions := loadProjectDecisions(err); len(decisions) > 0 {
+			report.RemoveConflictingTranslated(decisions)
+			report.Rejected = append(report.Rejected, decisions...)
+		} else {
+			report.Rejected = append(report.Rejected, model.ConversionDecision{
+				Path:    "compose",
+				Code:    "invalid-setting",
+				Message: err.Error(),
+			})
+		}
+		sortConversionReport(&report)
+		return model.Conversion{Report: report}, err
+	}
+	completeConversionReport(&report, *project, raw, app)
+	return model.Conversion{App: app, Report: report}, nil
+}
+
+func loadProjectDecisions(err error) []model.ConversionDecision {
+	message := err.Error()
+	if strings.HasPrefix(message, "unsupported fields:\n  - ") {
+		rawPaths := strings.Split(strings.TrimPrefix(message, "unsupported fields:\n  - "), "\n  - ")
+		decisions := make([]model.ConversionDecision, 0, len(rawPaths))
+		for _, rawPath := range rawPaths {
+			path, remediation := parseUnsupportedField(rawPath)
+			decisions = append(decisions, model.ConversionDecision{
+				Path:        path,
+				Code:        "unsupported-field",
+				Message:     "This x-uds field is not supported by the package translator.",
+				Remediation: remediation,
+			})
+		}
+		return decisions
+	}
+
+	matches := invalidSettingPattern.FindStringSubmatch(message)
+	if len(matches) == 3 {
+		path := matches[1]
+		return []model.ConversionDecision{{
+			Path:        path,
+			Code:        "invalid-setting",
+			Message:     matches[2],
+			Remediation: remediationForInvalidSetting(path),
+		}}
+	}
+
+	matches = excludedServiceReferencePattern.FindStringSubmatch(message)
+	if len(matches) == 3 {
+		path := matches[1]
+		service := matches[2]
+		return []model.ConversionDecision{{
+			Path:        path,
+			Code:        "invalid-setting",
+			Message:     fmt.Sprintf("references excluded service %q", service),
+			Remediation: remediationForExcludedServiceReference(path, service),
+		}}
+	}
+
+	return nil
+}
+
+func parseUnsupportedField(rawPath string) (string, string) {
+	rawPath = strings.TrimSpace(rawPath)
+	parts := strings.SplitN(rawPath, " (", 2)
+	path := strings.TrimSpace(parts[0])
+	if len(parts) == 1 {
+		return path, "remove this field or replace it with a supported x-uds.metadata or x-uds.spec setting"
+	}
+	remediation := strings.TrimSuffix(parts[1], ")")
+	return path, remediation
+}
+
+func remediationForInvalidSetting(path string) string {
+	switch {
+	case path == "x-uds.metadata":
+		return "set x-uds.metadata to an object containing supported fields: name, version, labels, and annotations"
+	case path == "x-uds.metadata.name":
+		return "set x-uds.metadata.name to a lowercase DNS-1123-compatible value"
+	case path == "x-uds.metadata.version":
+		return "set x-uds.metadata.version to a non-empty version string such as 1.2.3 or 1.2.3-uds.0"
+	case strings.HasPrefix(path, "x-uds.metadata.labels"), strings.HasPrefix(path, "x-uds.metadata.annotations"):
+		return "set this metadata field to an object whose values are strings"
+	case path == "x-uds.spec":
+		return "set x-uds.spec to an object containing supported fields: network, monitor, sso, and caBundle"
+	case path == "x-uds.spec.network":
+		return "set x-uds.spec.network to an object containing expose and allow arrays"
+	case path == "x-uds.spec.network.expose", path == "x-uds.spec.network.allow", path == "x-uds.spec.monitor", path == "x-uds.spec.sso":
+		return "set this field to an array"
+	case path == "x-uds.spec.caBundle":
+		return "set x-uds.spec.caBundle to an object containing configMap"
+	case path == "x-uds.spec.caBundle.configMap":
+		return "set x-uds.spec.caBundle.configMap to an object containing name, key, labels, and annotations"
+	case strings.HasPrefix(path, "x-uds.spec.caBundle.configMap.labels"), strings.HasPrefix(path, "x-uds.spec.caBundle.configMap.annotations"):
+		return "set this configMap metadata field to an object whose values are strings"
+	case path == "x-uds.spec.caBundle.configMap.name", path == "x-uds.spec.caBundle.configMap.key":
+		return "set this field to a non-empty string"
+	default:
+		return "correct the invalid x-uds setting so it matches the expected Compose extension schema"
+	}
+}
+
+func remediationForExcludedServiceReference(path, service string) string {
+	switch path {
+	case "x-uds.spec.network.expose":
+		return fmt.Sprintf("remove %q from x-uds.spec.network.expose or mark the dependency as required so the service is packaged", service)
+	case "x-uds.spec.monitor":
+		return fmt.Sprintf("remove %q from x-uds.spec.monitor or mark the dependency as required so the service is packaged", service)
+	default:
+		return "update this x-uds setting to reference only packaged services"
+	}
 }
 
 // findExcludedServices identifies development-only dependencies. A service is
@@ -666,6 +806,7 @@ func parseSpecConfig(config *model.Package, spec map[string]any, path string) er
 			return fmt.Errorf("invalid %s.network: must be an object", path)
 		}
 		if rawExpose, exists := network["expose"]; exists {
+			config.NetworkExposeConfigured = true
 			expose, ok := asSlice(rawExpose)
 			if !ok {
 				return fmt.Errorf("invalid %s.network.expose: must be an array", path)

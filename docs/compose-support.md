@@ -23,9 +23,9 @@
 
 ## Excluding development services
 
-Use long-syntax `depends_on` with `required: false` for a dependency that is
-useful during local Compose development but should not be included in the
-generated package:
+Use long-syntax `depends_on` with `required: false` to keep a dependency
+available to `docker compose up` while omitting it and its exclusive resources
+from the generated package:
 
 ```yaml
 services:

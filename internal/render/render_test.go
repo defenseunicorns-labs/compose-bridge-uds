@@ -982,6 +982,37 @@ services:
 	}
 }
 
+func TestWritePackageDependencyWaitUsesTCPPort(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    depends_on: [dns]
+  dns:
+    image: ghcr.io/acme/dns:1.0.0
+    expose: ["53/udp", "5353/tcp"]
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-api.yaml"))
+	if !strings.Contains(deployment, "nc -z dns 5353") {
+		t.Fatalf("expected dependency wait to use declared TCP port\n%s", deployment)
+	}
+	if strings.Contains(deployment, "nc -z dns 53;") {
+		t.Fatalf("expected dependency wait to skip UDP-only port\n%s", deployment)
+	}
+}
+
 func TestLoadCanonicalRejectsXUDSReferenceToExcludedService(t *testing.T) {
 	t.Parallel()
 
@@ -3357,6 +3388,7 @@ services:
         condition: service_healthy
   database:
     image: postgres:17
+    expose: ["5432"]
 secrets:
   api_key:
     file: ./api_key.txt
@@ -4426,6 +4458,43 @@ services:
 	}
 	if got := expose["host"]; got != "custom-api" {
 		t.Fatalf("expose host = %#v, want custom-api", got)
+	}
+}
+
+func TestWritePackageExplicitEmptyNetworkExposeDisablesInference(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+x-uds:
+  spec:
+    network:
+      expose: []
+services:
+  api:
+    image: ghcr.io/acme/api:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	spec := mustMap(t, udsPackage["spec"])
+	network := mustMap(t, spec["network"])
+	if _, exists := network["expose"]; exists {
+		t.Fatalf("network expose = %#v, want omitted", network["expose"])
+	}
+	if _, exists := spec["sso"]; exists {
+		t.Fatalf("sso = %#v, want omitted without an exposure", spec["sso"])
 	}
 }
 
