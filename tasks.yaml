@@ -1,0 +1,11 @@
+# Copyright 2024-2026 Defense Unicorns
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+
+includes:
+  - actions: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/actions.yaml
+  - create: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/create.yaml
+  - deploy: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/deploy.yaml
+  - setup: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/setup.yaml
+
+tasks: []
